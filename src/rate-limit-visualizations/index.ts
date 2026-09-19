@@ -1,3 +1,6 @@
+export { default as AlgorithmVisualization } from './AlgorithmVisualization'
 export { default as FixedWindowVisualization } from './FixedWindowVisualization'
 export { default as FloatingWindowVisualization } from './FloatingWindowVisualization'
 export { default as SlidingWindowVisualization } from './SlidingWindowVisualization'
+export { default as TokenBucketVisualization } from './TokenBucketVisualization'
+export type { VisualizationController } from './canvas-engine'

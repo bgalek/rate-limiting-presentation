@@ -20,6 +20,8 @@ export interface VisualizationConfig {
   windowMs: number
   refillIntervalMs: number
   refillRate: number
+  burstMode: boolean
+  steadyMode: boolean
   autoPlay: boolean
   startPaused: boolean
   showBoundaryLabels: boolean
@@ -184,7 +186,11 @@ export class CanvasVisualizationEngine implements VisualizationController {
     }
 
     this.attempt(now)
-    const intervals = [600, 600, 600, 1_800]
+    const intervals = this.getConfig().burstMode
+      ? [70, 70, 70, 90, 120]
+      : this.getConfig().steadyMode
+        ? [320, 320, 320, 320]
+        : [600, 600, 600, 1_800]
     this.nextAutomaticHitAt = now + intervals[this.intervalIndex]
     this.intervalIndex = (this.intervalIndex + 1) % intervals.length
   }

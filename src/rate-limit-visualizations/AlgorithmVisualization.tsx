@@ -29,6 +29,8 @@ export interface AlgorithmVisualizationProps {
   windowMs?: number
   refillIntervalMs?: number
   refillRate?: number
+  burstMode?: boolean
+  steadyMode?: boolean
   autoPlay?: boolean
   startPaused?: boolean
   showBoundaryLabels?: boolean
@@ -53,6 +55,8 @@ export default function AlgorithmVisualization({
   windowMs = 8_000,
   refillIntervalMs = 1_800,
   refillRate = 1,
+  burstMode = false,
+  steadyMode = false,
   autoPlay = true,
   startPaused = false,
   showBoundaryLabels = true,
@@ -74,6 +78,8 @@ export default function AlgorithmVisualization({
     windowMs,
     refillIntervalMs,
     refillRate,
+    burstMode,
+    steadyMode,
     autoPlay,
     startPaused,
     showBoundaryLabels,
@@ -89,6 +95,8 @@ export default function AlgorithmVisualization({
         windowMs,
         refillIntervalMs,
         refillRate,
+        burstMode,
+        steadyMode,
         autoPlay,
         startPaused,
         showBoundaryLabels,
@@ -104,6 +112,8 @@ export default function AlgorithmVisualization({
       onSnapshot,
       refillIntervalMs,
       refillRate,
+      burstMode,
+      steadyMode,
       showBoundaryLabels,
       startPaused,
       windowMs,
