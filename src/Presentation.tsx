@@ -1,10 +1,10 @@
 import { Deck, Slide } from '@revealjs/react'
 import {
-  IconAlertTriangle, IconApi, IconArrowRight, IconBolt,
+  IconActivity, IconAlertTriangle, IconApi, IconArrowRight, IconBolt,
   IconBrandCloudflare, IconBrandGithub, IconBrandReddit,
-  IconCheck, IconCpu, IconDatabase,
+  IconCoin, IconCpu, IconDatabase,
   IconLock, IconNetwork,
-  IconServer, IconShield, IconStack2, IconUsers, IconWifi, IconX,
+  IconServer, IconShield, IconStack2, IconTarget, IconUsers, IconWifi,
 } from '@tabler/icons-react'
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import 'reveal.js/reveal.css'
@@ -12,9 +12,11 @@ import {
   AlgorithmVisualization,
   FixedWindowVisualization,
   FloatingWindowVisualization,
+  LeakyBucketVisualization,
   SlidingWindowVisualization,
   TokenBucketVisualization,
   type VisualizationController,
+  type VisualizationSnapshot,
 } from './rate-limit-visualizations'
 
 const deckConfig = {
@@ -44,6 +46,51 @@ function RoleLine({ children, role }: { children: ReactNode; role: 'bad' | 'good
 
 function Metric({ label, tone = 'cyan', value }: { label: string; tone?: 'cyan' | 'yellow'; value: string }) {
   return <div className={`metric metric--${tone}`}><span>{label}</span><strong>{value}</strong></div>
+}
+
+function FloatingWindowFormula() {
+  const LIMIT = 6
+  const [snapshot, setSnapshot] = useState<VisualizationSnapshot | null>(null)
+  const floatingWindow = snapshot?.floatingWindow
+
+  return (
+    <>
+      <div className="formula formula--annotated">
+        <div className="formula-equation">
+          <span className="formula-unit">
+            <span className="formula-term formula-term--estimate">estimated requests</span>
+            <span className="formula-value">{floatingWindow ? floatingWindow.estimate.toFixed(2) : '—'}</span>
+          </span>
+          <span className="formula-op">=</span>
+          <span className="formula-unit">
+            <span className="formula-term formula-term--previous">previous window's requests</span>
+            <span className="formula-value">{floatingWindow ? floatingWindow.previousWindowCount : '—'}</span>
+          </span>
+          <span className="formula-op">×</span>
+          <span className="formula-unit">
+            <span className="formula-term formula-term--weight">% of it that carries over</span>
+            <span className="formula-value">{floatingWindow ? `${(floatingWindow.previousWindowWeight * 100).toFixed(0)}%` : '—'}</span>
+          </span>
+          <span className="formula-op">+</span>
+          <span className="formula-unit">
+            <span className="formula-term formula-term--current">this window's requests so far</span>
+            <span className="formula-value">{floatingWindow ? floatingWindow.currentWindowCount : '—'}</span>
+          </span>
+        </div>
+        <span className="formula-arrow" aria-hidden="true">
+          <span className="formula-arrow-line" />
+          <span className="formula-arrow-head" />
+        </span>
+        <span className="formula-unit">
+          <span className="formula-term formula-term--remaining">remaining limit</span>
+          <span className="formula-value">{snapshot ? `${snapshot.remaining.toFixed(1)} / ${LIMIT}` : '—'}</span>
+        </span>
+      </div>
+      <div className="live-canvas">
+        <FloatingWindowVisualization limit={LIMIT} height={280} onSnapshot={setSnapshot} />
+      </div>
+    </>
+  )
 }
 
 function ScenarioState({ step, control, event }: { step: string; control: string; event: string }) {
@@ -455,82 +502,6 @@ function WindowBoundaryDemo() {
   )
 }
 
-function SlidingLogMemoryDemo() {
-  const CAPACITY = 5_000
-  const [stored, setStored] = useState(0)
-  const [state, setState] = useState<'idle' | 'flooding' | 'crashed'>('idle')
-
-  function flood(): void {
-    setState('flooding')
-    setStored(0)
-    let count = 0
-    const id = window.setInterval(() => {
-      count += Math.ceil(CAPACITY / 16)
-      if (count >= CAPACITY) {
-        window.clearInterval(id)
-        setStored(CAPACITY)
-        setState('crashed')
-        return
-      }
-      setStored(count)
-    }, 70)
-  }
-
-  function reset(): void {
-    setState('idle')
-    setStored(0)
-  }
-
-  const pct = Math.min(100, (stored / CAPACITY) * 100)
-
-  return (
-    <div className="memory-demo">
-      <div className={state === 'crashed' ? 'memory-tank memory-tank--crashed' : 'memory-tank'}>
-        <div className="memory-fill" style={{ height: `${pct}%` }} />
-        <div className="memory-readout">
-          {state === 'crashed' ? <IconAlertTriangle /> : <IconDatabase />}
-          <strong>{state === 'crashed' ? 'OOM' : stored.toLocaleString()}</strong>
-          <span>{state === 'crashed' ? 'Redis killed' : 'timestamps stored'}</span>
-        </div>
-      </div>
-      <div className="demo-actions">
-        <button type="button" className="button-danger" onClick={flood}>Flood 5,000 blocked requests</button>
-        <button type="button" className="button-secondary" onClick={reset}>Reset</button>
-      </div>
-    </div>
-  )
-}
-
-function FloatingWindowSkewDemo() {
-  const [spiked, setSpiked] = useState(false)
-  const evenPositions = [8, 18, 27, 35, 42]
-  const spikePositions = [44, 45.5, 47, 48.5, 50]
-
-  return (
-    <div className="skew-demo">
-      <div className="skew-track">
-        <span className="skew-zone-label skew-zone-label--prev">previous window</span>
-        <span className="skew-zone-label skew-zone-label--cur">current window</span>
-        <div className="skew-boundary" />
-        {(spiked ? spikePositions : evenPositions).map((left, i) => (
-          <span key={i} className="skew-dot" style={{ left: `${left}%` }} />
-        ))}
-        {spiked && [56, 61, 66, 71].map((left, i) => (
-          <span key={left} className="skew-dot skew-dot--leak" style={{ left: `${left}%`, animationDelay: `${0.4 + i * 0.08}s` }} />
-        ))}
-      </div>
-      <div className="metric-row">
-        <Metric label="formula assumes" value="evenly spread" />
-        <Metric label="reality" tone="yellow" value={spiked ? 'all in last 1s' : '—'} />
-      </div>
-      <div className="demo-actions">
-        <button type="button" className="button-danger" onClick={() => setSpiked(true)}>Concentrate traffic at boundary</button>
-        <button type="button" className="button-secondary" onClick={() => setSpiked(false)}>Reset</button>
-      </div>
-    </div>
-  )
-}
-
 function WeightedCostDemo() {
   const [remaining, setRemaining] = useState(100)
   const [lastResult, setLastResult] = useState('Budget ready')
@@ -690,9 +661,8 @@ export default function Presentation() {
       <Deck config={deckConfig} onSlideChange={blurInteractiveControl}>
       <Slide className="slide-title" backgroundGradient="radial-gradient(circle at 75% 30%, #113a43 0, #080d12 42%, #05080b 100%)">
         <div className="title-lockup">
-          <Eyebrow>Rate limiting, visualized</Eyebrow>
           <h1>Rate Limiting:<br />Making everyone<br /><em>equally unhappy!</em></h1>
-          <p>Algorithms, attacks, and the distributed systems gap between them.</p>
+          <p className="title-authors">Bartosz Gałek&emsp;&emsp;&emsp;&emsp;Ece Tavasli</p>
         </div>
         <div className="hero-gauge" aria-hidden="true"><span>429</span></div>
         <Notes>Open with the promise: this is not a catalogue of algorithms. It is a sequence of attacks that forces the design to evolve.</Notes>
@@ -701,76 +671,99 @@ export default function Presentation() {
       <Slide>
         <Eyebrow>Why it exists</Eyebrow>
         <h2>Every shared service eventually meets an unfair user</h2>
-        <div className="fiasco-grid">
+        <div className="fiasco-grid fiasco-grid--spaced">
           <article><IconAlertTriangle /><strong>3.5B</strong><h3>system requests</h3><p>Ticketmaster reported unprecedented bot traffic and demand during the 2022 Taylor Swift presale.</p></article>
           <article><IconBrandGithub /><strong>60 → 5,000</strong><h3>API requests / hour</h3><p>GitHub’s core REST API budget changes dramatically when a request has an identity.</p></article>
           <article><IconBrandReddit /><strong>Access is a product</strong><h3>not an implementation detail</h3><p>Quotas, pricing, and policy changes can reshape — or retire — entire API ecosystems.</p></article>
         </div>
-        <p className="takeaway">A limit protects capacity, enforces fairness, and defines the product boundary.</p>
-        <Notes>Sources: https://business.ticketmaster.com/business-solutions/taylor-swift-the-eras-tour-onsale-explained/ ; https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api ; https://www.redditinc.com/blog/2023apiupdates</Notes>
+        <Notes>
+          A limit protects capacity, enforces fairness, and defines the product boundary.
+          {' '}Sources: https://business.ticketmaster.com/business-solutions/taylor-swift-the-eras-tour-onsale-explained/ ; https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api ; https://www.redditinc.com/blog/2023apiupdates
+        </Notes>
       </Slide>
 
       <Slide>
-        <Eyebrow>Algorithm 01 · fixed window</Eyebrow>
-        <h2>Reset the full allowance on a schedule</h2>
-        <div className="visualization-layout">
-          <div className="visual-copy"><p>Count requests inside a wall-clock interval. Reset at the next boundary.</p><ul><li><IconCheck />Tiny state</li><li><IconCheck />Easy to explain</li><li><IconX />Boundary spike</li></ul></div>
-          <div className="live-canvas"><FixedWindowVisualization limit={6} height={230} /><p><i className="legend-dot" /> allowed <i className="legend-dash" /> rejected</p></div>
+        <Eyebrow>The core question</Eyebrow>
+        <h2>Should this request be allowed, or not?</h2>
+        <div className="fiasco-grid fiasco-grid--centered">
+          <article><IconTarget /><strong>Accuracy</strong><h3>how exact must the count be?</h3></article>
+          <article><IconCoin /><strong>Cost</strong><h3>what can you afford to track?</h3></article>
+          <article><IconActivity /><strong>Burst behavior</strong><h3>absorb, reject, or smooth?</h3></article>
         </div>
-        <Notes>Select Send request several times. The implementation is cheap: one counter and one expiry per key.</Notes>
+        <p className="takeaway">No single algorithm wins on all three. <span className="takeaway-accent">That’s why there are several!</span></p>
+        <Notes>
+          Every rate limiter answers that one question — the trade-offs are all in how.
+          {' '}Accuracy: selling scarce inventory — tickets, marketplace listings — you can't overshoot. Sloppy counting sells the same item twice.
+          {' '}Cost: accuracy needs identity — user, API key, IP — held in memory and checked on every request. That adds up at millions of requests.
+          {' '}Burst behavior: short spikes above the sustained rate happen. Decide whether to let them through, queue them, or cut them off.
+          {' '}Frame this as the menu for the rest of the talk: every algorithm we look at is a different trade-off between these three axes, not a strictly better version of the last one.
+        </Notes>
       </Slide>
 
       <Slide>
-        <Eyebrow>Algorithm 02 · token bucket</Eyebrow>
-        <h2>Spend now. Refill over time.</h2>
-        <div className="visualization-layout">
-          <div className="visual-copy"><p>A bucket holds tokens up to a cap. Each request spends one; tokens return at a steady rate.</p><ul><li><IconCheck />Natural burst capacity</li><li><IconCheck />Smooth sustained rate</li><li><IconX />Needs a refill clock</li></ul></div>
-          <div className="live-canvas"><TokenBucketVisualization limit={6} refillIntervalMs={1_500} refillRate={1} height={230} /><p><i className="legend-dot" /> token available <i className="legend-dash" /> request rejected</p></div>
-        </div>
-        <Notes>Press Send request repeatedly to empty the bucket. Unlike a fixed window, capacity returns continuously rather than all at one wall-clock boundary.</Notes>
+        <Eyebrow>Algorithm 01</Eyebrow>
+        <h2>Fixed Window</h2>
+        <div className="live-canvas"><FixedWindowVisualization limit={6} height={400} /><p><i className="legend-dot" /> allowed <i className="legend-dash" /> rejected</p></div>
+        <Notes>
+          Divide time into fixed intervals (e.g. 1-minute boxes). Keep a counter per key, per window. Each request increments the counter; once it exceeds the limit, reject. When the window rolls over, the limit resets.
+          {' '}Pros: very simple to implement; O(1) memory and CPU, cheap at any scale; easy to explain; resets are predictable, so debugging is easy too.
+          {' '}Cons: prone to spikes at the boundary — up to 2x expected load; encourages thundering herds (clients honoring X-Retry-At all retry at exactly the same moment); no burst allowance.
+          {' '}Okay for e.g. login attempts, not good for protecting backend capacity.
+        </Notes>
       </Slide>
 
       <Slide>
-        <Eyebrow>Algorithm 03 · sliding window log</Eyebrow>
-        <h2>Capacity returns one request at a time</h2>
-        <div className="visualization-layout visualization-layout--reverse">
-          <div className="live-canvas"><SlidingWindowVisualization limit={6} height={230} /></div>
-          <div className="visual-copy"><p>Every accepted request keeps its exact timestamp until it ages out.</p></div>
-        </div>
-        <Notes>Compare the moving blue region with fixed blocks. Every request expires independently.</Notes>
+        <Eyebrow>Algorithm 02</Eyebrow>
+        <h2>Token Bucket</h2>
+        <div className="live-canvas"><TokenBucketVisualization limit={6} refillIntervalMs={1_000} refillRate={1} height={400} /><p><i className="legend-dot" /> token available <i className="legend-dash" /> request rejected</p></div>
+        <Notes>
+          A bucket has max capacity M and refill rate R/second. Each request consumes a token (or several, for weighted rate limiting). Enough tokens → allow; otherwise reject. Token count is computed lazily at request time, so there's no background work.
+          {' '}Pros: burst tolerance — spend all your tokens at once, no problem; O(1) memory per key; easy for weighted costs (LLM gateways price by model tokens); easy to explain ("100 req/s sustained, burst to 500" → bucket size 500, refills 100/s); wide support (Guava RateLimiter, Envoy, Kong, cloud API gateways ship it by default).
+          {' '}Cons: if the backend was sized for sustained traffic, a burst can bring it down; distributed state is hard without a centralized source of truth — sharded per-node state can break under uneven load balancing, and a non-atomic read-modify-write on shared buckets can over-admit; fresh keys start with full buckets, so rotating keys/IPs is an easy exploit.
+          {' '}Good default for general-purpose API rate limiting when clients are bursty and you're protecting against sustained overuse rather than small bursts.
+        </Notes>
       </Slide>
 
       <Slide>
-        <Eyebrow>Flaw 02 · the memory killer</Eyebrow>
-        <h2>Every blocked request still costs a write</h2>
-        <SlidingLogMemoryDemo />
-        <Notes>An attacker doesn't need to beat the limit. Firing millions of requests you correctly reject still forces a timestamp write per attempt — Redis OOMs on the rejections.</Notes>
+        <Eyebrow>Algorithm 03</Eyebrow>
+        <h2>Leaky Bucket</h2>
+        <div className="live-canvas"><LeakyBucketVisualization limit={6} refillIntervalMs={1_000} refillRate={1} height={400} /><p><i className="legend-dot" /> queued <i className="legend-dash" /> rejected</p></div>
+        <Notes>
+          Requests are queued in a bucket with fixed capacity; the queue drains at a constant rate. Any new request that overflows the bucket is rejected. Output is a constant stream of requests, regardless of how bursty the input traffic is.
+          {' '}Pros: constant-rate output — the backend knows what to expect, no unexpected spikes; tolerates short-term bursts by just processing them at a steady rate.
+          {' '}Cons: latency — requests wait in the queue, and by the time one is processed reality may already be stale (e.g. you were buying the last seat at a concert, but by the time your request was processed it was already gone); punishes legitimate bursty traffic.
+          {' '}Use when your backend needs steady-state request handling.
+        </Notes>
       </Slide>
 
       <Slide>
-        <Eyebrow>Algorithm 04 · sliding window counter</Eyebrow>
-        <h2>Two counters approximate the moving window</h2>
-        <div className="formula">estimate = previous × overlap + current</div>
-        <div className="visualization-layout">
-          <div className="visual-copy"><p>Weight the previous bucket by the fraction that still overlaps the lookback.</p></div>
-          <div className="live-canvas"><FloatingWindowVisualization limit={6} height={230} /></div>
-        </div>
-        <Notes>The counter version trades exact timestamps for two integers and a little arithmetic.</Notes>
+        <Eyebrow>Algorithm 04</Eyebrow>
+        <h2>Sliding Window Log</h2>
+        <div className="live-canvas"><SlidingWindowVisualization limit={6} height={400} /></div>
+        <Notes>
+          Store [timestamp][key] per request. On each new request, evict entries older than the window, count what remains, and decide allow/reject. Because the window follows the wall clock, enforcement is exact.
+          {' '}Pros: perfectly accurate; because the log is a record of recent requests, it helps resolve disputes ("you rate limited me unfairly").
+          {' '}Cons: O(N) memory per key (N = number of requests) — cost scales with the volume it's handling, bad for large volume; extra eviction work on every request means the limiter itself becomes the hotspot; on Redis this is typically multiple operations plus sorting (ZADD + ZREMRANGEBYSCORE + ZCARD).
+          {' '}Use only when exactness is a hard requirement and per-key volume is low (e.g. an export operation at 5 req/h). Rarely the right answer for high-throughput API limiting.
+        </Notes>
       </Slide>
 
       <Slide>
-        <Eyebrow>Flaw 03 · the approximation gap</Eyebrow>
-        <h2>The formula assumes traffic was smooth</h2>
-        <FloatingWindowSkewDemo />
-        <Notes>The weighted average assumes the previous window's traffic was evenly spread. A last-second spike breaks that assumption and leaks extra requests into the current window.</Notes>
+        <Eyebrow>Algorithm 05</Eyebrow>
+        <h2>Sliding Window Counter</h2>
+        <FloatingWindowFormula />
+        <Notes>
+          A hybrid: use a fixed-window counter, but estimate the sliding-window count by weighting the previous window's counter by how much it still overlaps the sliding window. E.g. if the current window is 40% elapsed, estimated count = current count + 0.6 × previous counter. Admit if the estimate is under the limit.
+          {' '}Pros: good balance of accuracy and cost — two counters and a timestamp per key, O(1) everything; eliminates the 2x boundary problem; smooths the thundering-herd-at-reset behavior of fixed windows a little.
+          {' '}Cons: it's an estimate — the weighting assumes requests in the previous window were uniformly distributed, which isn't true for bursty traffic, so it can over- or under-admit at the margins; much harder to explain to consumers, since behavior near the limit is fuzzy; no explicit burst allowance.
+          {' '}Best for high-scale requests when burst tolerance isn't a requirement (or when downstream really can't handle it).
+        </Notes>
       </Slide>
 
       <Slide>
-        <Eyebrow>Algorithm 05 · weighted rate limiting</Eyebrow>
         <h2>Request count is a poor proxy for work</h2>
-        <p>Not every request costs the same. Price the endpoint, not the hit.</p>
         <WeightedCostDemo />
-        <Notes>Press export three times. The first two consume the budget; the third receives 429. Then reset and contrast with ping.</Notes>
+        <Notes>Press export three times. The first two consume the budget; the third receives 429. Then reset and contrast with ping. Not every request costs the same — price the endpoint, not the hit.</Notes>
       </Slide>
 
       <Slide>
@@ -783,6 +776,10 @@ export default function Presentation() {
         </div>
         <p className="takeaway">Start here. Move inward only when the policy needs application context.</p>
         <Notes>Sources: official documentation for Cloudflare rate limiting rules, AWS API Gateway throttling, NGINX limit_req, HAProxy stick tables, Envoy rate limit filter, Traefik rateLimit middleware, Kong rate limiting, and APISIX limit-count.</Notes>
+      </Slide>
+
+      <Slide className="slide-sketches">
+        <h1>Sketches</h1>
       </Slide>
 
       <Slide className="interlude" backgroundGradient="linear-gradient(135deg, #4a1731 0%, #160d17 55%, #080d12 100%)">

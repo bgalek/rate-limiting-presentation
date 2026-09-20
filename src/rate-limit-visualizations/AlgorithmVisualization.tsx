@@ -7,6 +7,7 @@ import {
 import {
   IconPlayerPause,
   IconPlayerPlay,
+  IconPlayerStop,
 } from '@tabler/icons-react'
 import {
   CanvasVisualizationEngine,
@@ -47,6 +48,7 @@ const EMPTY_SNAPSHOT: VisualizationSnapshot = {
   remaining: 0,
   playing: true,
   started: true,
+  stopped: false,
 }
 
 export default function AlgorithmVisualization({
@@ -157,6 +159,10 @@ export default function AlgorithmVisualization({
     controllerRef.current?.setPlaying(!snapshot.playing)
   }
 
+  function toggleStopped(): void {
+    controllerRef.current?.setStopped(!snapshot.stopped)
+  }
+
   function start(): void {
     controllerRef.current?.start()
   }
@@ -198,6 +204,18 @@ export default function AlgorithmVisualization({
               <IconPlayerPlay aria-hidden="true" size={20} stroke={2} />
             )}
             {snapshot.playing ? 'Pause' : 'Resume'} stream
+          </button>
+          <button
+            type="button"
+            className={SECONDARY_BUTTON_CLASS}
+            onClick={toggleStopped}
+          >
+            {snapshot.stopped ? (
+              <IconPlayerPlay aria-hidden="true" size={20} stroke={2} />
+            ) : (
+              <IconPlayerStop aria-hidden="true" size={20} stroke={2} />
+            )}
+            {snapshot.stopped ? 'Resume' : 'Stop'}
           </button>
         </div>
       )}
