@@ -1,8 +1,11 @@
 import {
   FloatingWindowLimiter,
+  LeakyBucketLimiter,
+  SlidingWindowLimiter,
   TokenBucketLimiter,
   UserFixedWindowLimiter,
   createRateLimiter,
+  type FloatingWindowSnapshot,
   type RateLimitAlgorithm,
   type RateLimiter,
 } from './algorithms'
@@ -13,6 +16,10 @@ const MUTED_COLOR = '#ced4da'
 const TRACK_COLOR = '#adb5bd'
 const WINDOW_COLOR = 'rgba(76, 110, 245, 0.24)'
 const WINDOW_BORDER_COLOR = 'rgba(145, 167, 255, 0.28)'
+const BALL_FALL_DURATION_MS = 380
+const BALL_LEAVE_DURATION_MS = 260
+const REJECT_BUZZ_DURATION_MS = 420
+const EVICTION_POP_DURATION_MS = 500
 
 export interface VisualizationConfig {
   algorithm: RateLimitAlgorithm
@@ -20,6 +27,8 @@ export interface VisualizationConfig {
   windowMs: number
   refillIntervalMs: number
   refillRate: number
+  burstMode: boolean
+  steadyMode: boolean
   autoPlay: boolean
   startPaused: boolean
   showBoundaryLabels: boolean
@@ -37,12 +46,15 @@ export interface VisualizationSnapshot {
   remaining: number
   playing: boolean
   started: boolean
+  stopped: boolean
+  floatingWindow?: FloatingWindowSnapshot
 }
 
 export interface VisualizationController {
   destroy(): void
   hit(): void
   setPlaying(playing: boolean): void
+  setStopped(stopped: boolean): void
   start(): void
 }
 
@@ -61,6 +73,13 @@ function easeOutElastic(value: number): number {
   return 2 ** (-10 * value) * Math.sin((value * 10 - 0.75) * constant) + 1
 }
 
+function easeOutSoftBack(value: number): number {
+  const overshoot = 1.15
+  const shifted = value - 1
+
+  return 1 + (overshoot + 1) * shifted ** 3 + overshoot * shifted ** 2
+}
+
 function easeOutExpo(value: number): number {
   return value === 1 ? 1 : 1 - 2 ** (-10 * value)
 }
@@ -75,6 +94,136 @@ function roundedRectangle(
 ): void {
   context.beginPath()
   context.roundRect(x, y, width, height, radius)
+}
+
+interface PailGeometry {
+  centerX: number
+  topY: number
+  bottomY: number
+  topHalfWidth: number
+  bottomHalfWidth: number
+}
+
+function drawPail(context: CanvasRenderingContext2D, geometry: PailGeometry): void {
+  const { centerX, topY, bottomY, topHalfWidth, bottomHalfWidth } = geometry
+  const cornerRadius = 10
+
+  const bodyGradient = context.createLinearGradient(
+    centerX - topHalfWidth,
+    0,
+    centerX + topHalfWidth,
+    0,
+  )
+  bodyGradient.addColorStop(0, '#0c1a2b')
+  bodyGradient.addColorStop(0.45, '#16283d')
+  bodyGradient.addColorStop(0.55, '#16283d')
+  bodyGradient.addColorStop(1, '#0a1622')
+
+  context.beginPath()
+  context.moveTo(centerX - topHalfWidth, topY)
+  context.lineTo(centerX - bottomHalfWidth, bottomY - cornerRadius)
+  context.quadraticCurveTo(centerX - bottomHalfWidth, bottomY, centerX - bottomHalfWidth + cornerRadius, bottomY)
+  context.lineTo(centerX + bottomHalfWidth - cornerRadius, bottomY)
+  context.quadraticCurveTo(centerX + bottomHalfWidth, bottomY, centerX + bottomHalfWidth, bottomY - cornerRadius)
+  context.lineTo(centerX + topHalfWidth, topY)
+  context.closePath()
+  context.fillStyle = bodyGradient
+  context.fill()
+  context.strokeStyle = 'rgba(206, 212, 218, 0.55)'
+  context.lineWidth = 3
+  context.stroke()
+
+  context.beginPath()
+  context.ellipse(centerX, topY, topHalfWidth, 8, 0, 0, Math.PI * 2)
+  context.fillStyle = '#050b12'
+  context.fill()
+  context.strokeStyle = 'rgba(206, 212, 218, 0.7)'
+  context.lineWidth = 3
+  context.stroke()
+
+  context.beginPath()
+  context.ellipse(centerX, topY - 14, topHalfWidth * 0.85, 12, 0, Math.PI, Math.PI * 2)
+  context.strokeStyle = 'rgba(206, 212, 218, 0.55)'
+  context.lineWidth = 4
+  context.stroke()
+}
+
+function drawBall(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  radius: number,
+  color: string,
+): void {
+  const gradient = context.createRadialGradient(
+    x - radius * 0.35,
+    y - radius * 0.35,
+    radius * 0.15,
+    x,
+    y,
+    radius,
+  )
+  gradient.addColorStop(0, '#ffffff')
+  gradient.addColorStop(0.35, color)
+  gradient.addColorStop(1, color)
+
+  context.beginPath()
+  context.arc(x, y, radius, 0, Math.PI * 2)
+  context.fillStyle = gradient
+  context.fill()
+}
+
+function drawEmptySlot(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  radius: number,
+): void {
+  context.beginPath()
+  context.arc(x, y, radius, 0, Math.PI * 2)
+  context.strokeStyle = 'rgba(173, 181, 189, 0.35)'
+  context.lineWidth = 2
+  context.setLineDash([3, 3])
+  context.stroke()
+  context.setLineDash([])
+}
+
+function drawClock(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  radius: number,
+  progress: number,
+  accentColor: string,
+): void {
+  const startAngle = -Math.PI / 2
+  const endAngle = startAngle + Math.PI * 2 * Math.min(Math.max(progress, 0), 1)
+
+  context.beginPath()
+  context.arc(x, y, radius, 0, Math.PI * 2)
+  context.strokeStyle = 'rgba(206, 212, 218, 0.35)'
+  context.lineWidth = 2
+  context.stroke()
+
+  context.beginPath()
+  context.arc(x, y, radius, startAngle, endAngle)
+  context.strokeStyle = accentColor
+  context.lineWidth = 2
+  context.lineCap = 'round'
+  context.stroke()
+  context.lineCap = 'butt'
+
+  context.beginPath()
+  context.moveTo(x, y)
+  context.lineTo(x + Math.cos(endAngle) * radius * 0.72, y + Math.sin(endAngle) * radius * 0.72)
+  context.strokeStyle = accentColor
+  context.lineWidth = 1.5
+  context.stroke()
+
+  context.beginPath()
+  context.arc(x, y, 1.4, 0, Math.PI * 2)
+  context.fillStyle = accentColor
+  context.fill()
 }
 
 export class CanvasVisualizationEngine implements VisualizationController {
@@ -93,8 +242,19 @@ export class CanvasVisualizationEngine implements VisualizationController {
   private intervalIndex = 0
   private playing = true
   private started = true
+  private stopped = false
   private visible = true
   private lastSnapshotAt = 0
+  private lastTokenCount = -1
+  private tokenFallStarts = new Map<number, number>()
+  private tokenLeaveStarts = new Map<number, number>()
+  private lastQueueDepth = -1
+  private queueFallStarts = new Map<number, number>()
+  private fixedWindowRemaining = new Map<number, number>()
+  private evictedEventIds = new Set<number>()
+  private evictionPopStarts = new Map<number, number>()
+  private virtualNow = 0
+  private lastRealTime = 0
 
   public constructor(
     canvas: HTMLCanvasElement,
@@ -111,10 +271,12 @@ export class CanvasVisualizationEngine implements VisualizationController {
     this.context = context
     this.getConfig = getConfig
     this.onSnapshot = onSnapshot
+    this.virtualNow = performance.now()
+    this.lastRealTime = this.virtualNow
     this.limiter = createRateLimiter(
       getConfig().algorithm,
       getConfig(),
-      performance.now(),
+      this.virtualNow,
     )
     this.started = !getConfig().startPaused
     this.playing = getConfig().autoPlay
@@ -127,8 +289,8 @@ export class CanvasVisualizationEngine implements VisualizationController {
       { rootMargin: '160px' },
     )
     this.intersectionObserver.observe(canvas)
-    this.nextAutomaticHitAt = performance.now() + 500
-    this.emitSnapshot(performance.now())
+    this.nextAutomaticHitAt = this.virtualNow + 500
+    this.emitSnapshot(this.virtualNow)
     this.animationFrame = requestAnimationFrame(this.frame)
   }
 
@@ -139,27 +301,41 @@ export class CanvasVisualizationEngine implements VisualizationController {
   }
 
   public hit(): void {
-    this.ensureLimiter(performance.now())
-    this.attempt(performance.now())
+    this.ensureLimiter(this.virtualNow)
+    this.attempt(this.virtualNow)
     this.playing = false
-    this.emitSnapshot(performance.now())
+    this.emitSnapshot(this.virtualNow)
   }
 
   public setPlaying(playing: boolean): void {
     this.playing = playing
     this.started = true
-    this.nextAutomaticHitAt = performance.now() + 350
-    this.emitSnapshot(performance.now())
+    this.nextAutomaticHitAt = this.virtualNow + 350
+    this.emitSnapshot(this.virtualNow)
+  }
+
+  public setStopped(stopped: boolean): void {
+    this.stopped = stopped
+    this.emitSnapshot(this.virtualNow)
   }
 
   public start(): void {
     this.started = true
     this.playing = true
-    this.nextAutomaticHitAt = performance.now() + 250
-    this.emitSnapshot(performance.now())
+    this.nextAutomaticHitAt = this.virtualNow + 250
+    this.emitSnapshot(this.virtualNow)
   }
 
-  private frame(now: number): void {
+  private frame(realNow: number): void {
+    const delta = this.lastRealTime === 0 ? 0 : realNow - this.lastRealTime
+    this.lastRealTime = realNow
+
+    if (!this.stopped) {
+      this.virtualNow += delta
+    }
+
+    const now = this.virtualNow
+
     this.ensureLimiter(now)
 
     if (this.visible) {
@@ -184,7 +360,11 @@ export class CanvasVisualizationEngine implements VisualizationController {
     }
 
     this.attempt(now)
-    const intervals = [600, 600, 600, 1_800]
+    const intervals = this.getConfig().burstMode
+      ? [70, 70, 70, 90, 120]
+      : this.getConfig().steadyMode
+        ? [320, 320, 320, 320]
+        : [600, 600, 600, 1_800]
     this.nextAutomaticHitAt = now + intervals[this.intervalIndex]
     this.intervalIndex = (this.intervalIndex + 1) % intervals.length
   }
@@ -220,6 +400,13 @@ export class CanvasVisualizationEngine implements VisualizationController {
     this.limiterKey = nextLimiterKey
     this.limiter = createRateLimiter(config.algorithm, config, now)
     this.events = []
+    this.lastTokenCount = -1
+    this.tokenFallStarts.clear()
+    this.tokenLeaveStarts.clear()
+    this.lastQueueDepth = -1
+    this.queueFallStarts.clear()
+    this.evictedEventIds.clear()
+    this.evictionPopStarts.clear()
   }
 
   private draw(now: number): void {
@@ -232,6 +419,7 @@ export class CanvasVisualizationEngine implements VisualizationController {
     switch (config.algorithm) {
       case 'fixed-window':
         this.drawFixedWindows(now, size)
+        this.drawFixedWindowRemainingLabels(now, size)
         break
       case 'user-fixed-window':
         this.drawUserFixedWindow(now, size)
@@ -245,10 +433,35 @@ export class CanvasVisualizationEngine implements VisualizationController {
       case 'token-bucket':
         this.drawTokenBucket(now, size)
         break
+      case 'leaky-bucket':
+        this.drawLeakyBucket(now, size)
+        break
     }
 
+    this.drawKeyLabel(now, size)
+    this.drawNowLine(size)
     this.drawEvents(now, size)
     this.drawNowAndRemaining(now, size)
+  }
+
+  private drawKeyLabel(now: number, size: CanvasSize): void {
+    const config = this.getConfig()
+    const windowIndex = Math.floor(now / config.windowMs)
+    const identity = '203.0.113.7'
+    const keysByAlgorithm: Record<RateLimitAlgorithm, string> = {
+      'fixed-window': `rl:${identity}:${windowIndex}`,
+      'user-fixed-window': `rl:${identity}:${windowIndex}`,
+      'sliding-window': `rl:${identity}:log`,
+      'floating-window': `rl:${identity}:${windowIndex} (+ prev window's key)`,
+      'token-bucket': `rl:${identity}:bucket`,
+      'leaky-bucket': `rl:${identity}:queue`,
+    }
+
+    this.context.font = '600 12px ui-monospace, monospace'
+    this.context.fillStyle = MUTED_COLOR
+    this.context.textAlign = 'left'
+    this.context.fillText(`key  ${keysByAlgorithm[config.algorithm]}`, 14, 20)
+    this.context.font = '600 16px system-ui, sans-serif'
   }
 
   private prepareCanvas(): CanvasSize {
@@ -291,6 +504,40 @@ export class CanvasVisualizationEngine implements VisualizationController {
     }
   }
 
+  private drawFixedWindowRemainingLabels(now: number, size: CanvasSize): void {
+    const config = this.getConfig()
+    const scale = this.windowScale()
+    const currentWindowIndex = Math.floor(now / config.windowMs)
+
+    this.fixedWindowRemaining.set(currentWindowIndex, this.limiter.remaining(now))
+
+    for (const windowIndex of this.fixedWindowRemaining.keys()) {
+      if (windowIndex < currentWindowIndex - 10 || windowIndex > currentWindowIndex + 10) {
+        this.fixedWindowRemaining.delete(windowIndex)
+      }
+    }
+
+    this.context.font = '600 12px ui-monospace, monospace'
+    this.context.textAlign = 'center'
+
+    for (let offset = -2; offset <= 2; offset += 1) {
+      const windowIndex = currentWindowIndex + offset
+      const windowStartedAt = windowIndex * config.windowMs
+      const x = size.width / 2 + (windowStartedAt - now) * scale
+      const width = config.windowMs * scale
+      const remaining =
+        offset > 0
+          ? config.limit
+          : (this.fixedWindowRemaining.get(windowIndex) ?? config.limit)
+
+      this.context.fillStyle = offset === 0 ? ALLOWED_COLOR : MUTED_COLOR
+      this.context.fillText(`${remaining} left`, x + width / 2, size.height / 2 - 42)
+    }
+
+    this.context.textAlign = 'left'
+    this.context.font = '600 16px system-ui, sans-serif'
+  }
+
   private drawUserFixedWindow(now: number, size: CanvasSize): void {
     const config = this.getConfig()
     const scale = this.windowScale()
@@ -313,44 +560,154 @@ export class CanvasVisualizationEngine implements VisualizationController {
   }
 
   private drawSlidingWindow(now: number, size: CanvasSize): void {
-    const width = this.getConfig().windowMs * this.windowScale()
+    const config = this.getConfig()
+    const scale = this.windowScale()
+    const width = config.windowMs * scale
+    const centerX = size.width / 2
+
     this.drawDottedTrack(now, size)
     this.context.fillStyle = 'rgba(76, 110, 245, 0.24)'
     roundedRectangle(
       this.context,
-      size.width / 2 - width,
+      centerX - width,
       size.height / 2 - 29,
       width,
       58,
       9,
     )
     this.context.fill()
+
+    const currentEventIds = new Set(this.events.map((event) => event.id))
+
+    for (const eventId of this.evictedEventIds) {
+      if (!currentEventIds.has(eventId)) {
+        this.evictedEventIds.delete(eventId)
+      }
+    }
+
+    for (const event of this.events) {
+      if (!event.allowed) {
+        continue
+      }
+
+      const age = now - event.timestamp
+
+      if (age >= config.windowMs && !this.evictedEventIds.has(event.id)) {
+        this.evictedEventIds.add(event.id)
+        this.evictionPopStarts.set(event.id, now)
+      }
+    }
+
+    for (const [eventId, startedAt] of this.evictionPopStarts) {
+      const progress = Math.min((now - startedAt) / EVICTION_POP_DURATION_MS, 1)
+
+      if (progress >= 1) {
+        this.evictionPopStarts.delete(eventId)
+        continue
+      }
+
+      const event = this.events.find((candidate) => candidate.id === eventId)
+
+      if (event === undefined) {
+        continue
+      }
+
+      const age = now - event.timestamp
+      const x = centerX - age * scale
+      const eased = easeOutExpo(progress)
+      const radius = 5.5 + eased * 10
+
+      this.context.globalAlpha = 1 - eased
+      this.context.strokeStyle = BLOCKED_COLOR
+      this.context.lineWidth = 2
+      this.context.beginPath()
+      this.context.arc(x, size.height / 2, radius, 0, Math.PI * 2)
+      this.context.stroke()
+      this.context.globalAlpha = 1
+    }
+
+    if (this.limiter instanceof SlidingWindowLimiter) {
+      const count = this.limiter.count(now)
+
+      this.context.font = '600 13px ui-monospace, monospace'
+      this.context.fillStyle = ALLOWED_COLOR
+      this.context.textAlign = 'center'
+      this.context.fillText(`${count} timestamp${count === 1 ? '' : 's'} stored`, centerX, size.height / 2 - 46)
+      this.context.textAlign = 'left'
+      this.context.font = '600 16px system-ui, sans-serif'
+    }
   }
 
   private drawFloatingWindow(now: number, size: CanvasSize): void {
+    const config = this.getConfig()
+    const scale = this.windowScale()
+    const currentWindowIndex = Math.floor(now / config.windowMs)
+    const currentWindowStartedAt = currentWindowIndex * config.windowMs
+    const previousWindowStartedAt = currentWindowStartedAt - config.windowMs
+    const boxTop = size.height / 2 - 29
+    const boxHeight = 58
+
     this.drawFixedWindows(now, size)
-    const width = this.getConfig().windowMs * this.windowScale()
+
+    const width = config.windowMs * scale
     const left = size.width / 2 - width
+    const xCurrent = size.width / 2 + (currentWindowStartedAt - now) * scale
+    const xPrevious = size.width / 2 + (previousWindowStartedAt - now) * scale
+
+    const floatingSnapshot =
+      this.limiter instanceof FloatingWindowLimiter ? this.limiter.snapshot(now) : null
+    const overlapZoneLeft = Math.max(left, xPrevious)
+    const overlapZoneRight = Math.min(left + width, xPrevious + width)
+    const overlapZoneHasTraffic = (floatingSnapshot?.previousWindowCount ?? 0) > 0
+
+    if (overlapZoneRight > overlapZoneLeft) {
+      if (overlapZoneHasTraffic) {
+        this.context.fillStyle = 'rgba(255, 212, 59, 0.28)'
+        roundedRectangle(this.context, overlapZoneLeft, boxTop, overlapZoneRight - overlapZoneLeft, boxHeight, 9)
+        this.context.fill()
+      }
+
+      this.context.strokeStyle = 'rgba(255, 212, 59, 0.6)'
+      this.context.lineWidth = 1.5
+      this.context.setLineDash([3, 3])
+      roundedRectangle(this.context, overlapZoneLeft, boxTop, overlapZoneRight - overlapZoneLeft, boxHeight, 9)
+      this.context.stroke()
+      this.context.setLineDash([])
+    }
+
+    this.context.strokeStyle = '#ff922b'
+    this.context.lineWidth = 2
+    roundedRectangle(this.context, xPrevious, boxTop, width, boxHeight, 9)
+    this.context.stroke()
+
+    this.context.strokeStyle = ALLOWED_COLOR
+    this.context.lineWidth = 2
+    roundedRectangle(this.context, xCurrent, boxTop, width, boxHeight, 9)
+    this.context.stroke()
 
     this.context.strokeStyle = 'rgba(206, 212, 218, 0.48)'
     this.context.lineWidth = 2
     this.context.setLineDash([5, 4])
-    roundedRectangle(
-      this.context,
-      left,
-      size.height / 2 - 29,
-      width,
-      58,
-      9,
-    )
+    roundedRectangle(this.context, left, boxTop, width, boxHeight, 9)
     this.context.stroke()
     this.context.setLineDash([])
 
-    if (this.limiter instanceof FloatingWindowLimiter) {
-      const snapshot = this.limiter.snapshot(now)
-      const label = `~${snapshot.estimate.toFixed(1)} requests`
+    if (floatingSnapshot !== null) {
+      this.context.font = '600 11px ui-monospace, monospace'
+      this.context.fillStyle = '#ff922b'
+      this.context.fillText('previous', xPrevious + 8, boxTop - 10)
+      this.context.fillStyle = ALLOWED_COLOR
+      this.context.fillText('current', xCurrent + 8, boxTop - 10)
+
+      if (overlapZoneRight > overlapZoneLeft) {
+        this.context.fillStyle = 'rgba(255, 212, 59, 0.85)'
+        this.context.fillText('overlap', overlapZoneLeft + 4, boxTop + boxHeight + 16)
+      }
+
+      this.context.font = '600 16px system-ui, sans-serif'
+      const label = `~${floatingSnapshot.estimate.toFixed(1)} requests`
       this.context.fillStyle = MUTED_COLOR
-      this.context.fillText(label, left + 12, size.height / 2 - 40)
+      this.context.fillText(label, left + 12, boxTop - 40)
     }
   }
 
@@ -360,31 +717,228 @@ export class CanvasVisualizationEngine implements VisualizationController {
       this.limiter instanceof TokenBucketLimiter
         ? Math.floor(this.limiter.tokenCount(now))
         : 0
-    const bucketHeight = Math.min(config.limit * 11 + 10, size.height - 36)
-    const bucketX = size.width - 48
-    const bucketY = size.height / 2 - bucketHeight / 2
+    const ballRadius = 12
+    const ballSpacing = ballRadius * 2 + 6
+    const bucketHeight = Math.min(config.limit * ballSpacing + 20, size.height - 140)
+    const centerX = size.width - 130
+    const bucketTopY = size.height / 2 - bucketHeight / 2 + 24
+    const bucketBottomY = bucketTopY + bucketHeight
 
     this.drawDottedTrack(now, size)
-    this.context.fillStyle = '#091627'
-    this.context.strokeStyle = MUTED_COLOR
-    this.context.lineWidth = 1
-    roundedRectangle(this.context, bucketX, bucketY, 16, bucketHeight, 6)
-    this.context.fill()
-    this.context.stroke()
-    this.context.fillRect(bucketX - 1, bucketY - 6, 18, 7)
+
+    if (this.lastTokenCount === -1) {
+      this.lastTokenCount = tokens
+    } else if (tokens > this.lastTokenCount) {
+      for (let index = this.lastTokenCount; index < tokens; index += 1) {
+        this.tokenFallStarts.set(index, now)
+      }
+      this.lastTokenCount = tokens
+    } else if (tokens < this.lastTokenCount) {
+      for (let index = tokens; index < this.lastTokenCount; index += 1) {
+        this.tokenFallStarts.delete(index)
+        this.tokenLeaveStarts.set(index, now)
+      }
+      this.lastTokenCount = tokens
+    }
+
+    drawPail(this.context, {
+      centerX,
+      topY: bucketTopY,
+      bottomY: bucketBottomY,
+      topHalfWidth: 92,
+      bottomHalfWidth: 68,
+    })
+
+    if (this.limiter instanceof TokenBucketLimiter) {
+      const snapshot = this.limiter.snapshot(now)
+      const clockRadius = 26
+      const clockX = centerX
+      const clockY = bucketTopY - 68
+      const clockProgress = snapshot.msSinceRefill / snapshot.refillIntervalMs
+
+      drawClock(this.context, clockX, clockY, clockRadius, clockProgress, ALLOWED_COLOR)
+
+      this.context.font = '600 20px ui-monospace, monospace'
+      this.context.fillStyle = MUTED_COLOR
+      this.context.textAlign = 'center'
+      const seconds = (snapshot.refillIntervalMs / 1_000).toString().replace(/\.0$/, '')
+      this.context.fillText(`+${snapshot.refillRate} / ${seconds}s`, clockX, clockY - clockRadius - 16)
+      this.context.textAlign = 'left'
+      this.context.font = '600 16px system-ui, sans-serif'
+    }
 
     for (let tokenIndex = 0; tokenIndex < tokens; tokenIndex += 1) {
-      this.context.fillStyle = ALLOWED_COLOR
-      roundedRectangle(
-        this.context,
-        bucketX + 3,
-        bucketY + bucketHeight - 12 - tokenIndex * 11,
-        10,
-        10,
-        5,
-      )
-      this.context.fill()
+      const landingY = bucketBottomY - 16 - tokenIndex * ballSpacing
+      const fallStartedAt = this.tokenFallStarts.get(tokenIndex)
+      let ballY = landingY
+
+      if (fallStartedAt !== undefined) {
+        const progress = Math.min((now - fallStartedAt) / BALL_FALL_DURATION_MS, 1)
+        const eased = easeOutSoftBack(progress)
+        const fromY = bucketTopY - 90
+        ballY = fromY + (landingY - fromY) * eased
+
+        if (progress >= 1) {
+          this.tokenFallStarts.delete(tokenIndex)
+        }
+      }
+
+      drawBall(this.context, centerX, ballY, ballRadius, ALLOWED_COLOR)
     }
+
+    for (let slotIndex = tokens; slotIndex < config.limit; slotIndex += 1) {
+      const slotY = bucketBottomY - 16 - slotIndex * ballSpacing
+
+      if (slotY < bucketTopY + ballRadius) {
+        break
+      }
+
+      drawEmptySlot(this.context, centerX, slotY, ballRadius)
+    }
+
+    this.context.font = '600 20px ui-monospace, monospace'
+    this.context.fillStyle = MUTED_COLOR
+    this.context.textAlign = 'center'
+    this.context.fillText(`${tokens} / ${config.limit} tokens`, centerX, bucketBottomY + 36)
+    this.context.textAlign = 'left'
+    this.context.font = '600 16px system-ui, sans-serif'
+
+    for (const [tokenIndex, leaveStartedAt] of this.tokenLeaveStarts) {
+      const progress = Math.min((now - leaveStartedAt) / BALL_LEAVE_DURATION_MS, 1)
+
+      if (progress >= 1) {
+        this.tokenLeaveStarts.delete(tokenIndex)
+        continue
+      }
+
+      const landingY = bucketBottomY - 16 - tokenIndex * ballSpacing
+      const eased = easeOutExpo(progress)
+      const x = centerX - eased * (centerX - size.width / 2) * 0.4
+      const y = landingY - eased * 55
+      const radius = ballRadius * (1 - eased * 0.35)
+
+      this.context.globalAlpha = 1 - eased
+      drawBall(this.context, x, y, radius, ALLOWED_COLOR)
+      this.context.globalAlpha = 1
+    }
+  }
+
+  private drawLeakyBucket(now: number, size: CanvasSize): void {
+    const config = this.getConfig()
+    const snapshot =
+      this.limiter instanceof LeakyBucketLimiter
+        ? this.limiter.snapshot(now)
+        : { capacity: config.limit, queueDepth: 0, drainIntervalMs: config.refillIntervalMs, drainRate: config.refillRate, msSinceDrain: 0 }
+    const queuedItems = Math.round(snapshot.queueDepth)
+    const ballRadius = 12
+    const ballSpacing = ballRadius * 2 + 6
+    const bucketHeight = Math.min(config.limit * ballSpacing + 24, size.height - 190)
+    const centerX = size.width - 130
+    const bucketTopY = size.height / 2 - bucketHeight / 2 - 44
+    const bucketBottomY = bucketTopY + bucketHeight
+
+    this.drawDottedTrack(now, size)
+
+    if (this.lastQueueDepth === -1) {
+      this.lastQueueDepth = queuedItems
+    } else if (queuedItems > this.lastQueueDepth) {
+      for (let index = this.lastQueueDepth; index < queuedItems; index += 1) {
+        this.queueFallStarts.set(index, now)
+      }
+      this.lastQueueDepth = queuedItems
+    } else if (queuedItems < this.lastQueueDepth) {
+      for (const index of this.queueFallStarts.keys()) {
+        if (index >= queuedItems) {
+          this.queueFallStarts.delete(index)
+        }
+      }
+      this.lastQueueDepth = queuedItems
+    }
+
+    const lastRejectionAt = this.events.reduce(
+      (latest, event) => (!event.allowed && event.timestamp > latest ? event.timestamp : latest),
+      -Infinity,
+    )
+    const buzzProgress = Math.min((now - lastRejectionAt) / REJECT_BUZZ_DURATION_MS, 1)
+    const isBuzzing = buzzProgress < 1
+    const shakeOffset = isBuzzing
+      ? Math.sin(buzzProgress * Math.PI * 7) * 9 * (1 - buzzProgress)
+      : 0
+    const bucketCenterX = centerX + shakeOffset
+
+    drawPail(this.context, {
+      centerX: bucketCenterX,
+      topY: bucketTopY,
+      bottomY: bucketBottomY,
+      topHalfWidth: 92,
+      bottomHalfWidth: 68,
+    })
+
+    if (isBuzzing) {
+      const buzzAlpha = 1 - buzzProgress
+      this.context.strokeStyle = `rgba(255, 82, 82, ${buzzAlpha})`
+      this.context.lineWidth = 5
+      roundedRectangle(this.context, bucketCenterX - 100, bucketTopY - 16, 200, bucketHeight + 32, 20)
+      this.context.stroke()
+    }
+
+    const drainProgress = Math.min(snapshot.msSinceDrain / snapshot.drainIntervalMs, 1)
+
+    this.context.font = '600 20px ui-monospace, monospace'
+    this.context.fillStyle = MUTED_COLOR
+    this.context.textAlign = 'center'
+    this.context.fillText(`queued ${queuedItems} / ${snapshot.capacity}`, bucketCenterX, bucketTopY - 26)
+
+    for (let itemIndex = 0; itemIndex < queuedItems; itemIndex += 1) {
+      const landingY = bucketBottomY - 16 - itemIndex * ballSpacing
+      const fallStartedAt = this.queueFallStarts.get(itemIndex)
+      let ballY = landingY
+
+      if (fallStartedAt !== undefined) {
+        const progress = Math.min((now - fallStartedAt) / BALL_FALL_DURATION_MS, 1)
+        const eased = easeOutSoftBack(progress)
+        const fromY = bucketTopY - 90
+        ballY = fromY + (landingY - fromY) * eased
+
+        if (progress >= 1) {
+          this.queueFallStarts.delete(itemIndex)
+        }
+      }
+
+      drawBall(this.context, bucketCenterX, ballY, ballRadius, TRACK_COLOR)
+    }
+
+    for (let slotIndex = queuedItems; slotIndex < config.limit; slotIndex += 1) {
+      const slotY = bucketBottomY - 16 - slotIndex * ballSpacing
+
+      if (slotY < bucketTopY + ballRadius) {
+        break
+      }
+
+      drawEmptySlot(this.context, bucketCenterX, slotY, ballRadius)
+    }
+
+    const spoutY = bucketBottomY
+
+    if (snapshot.queueDepth > 0) {
+      const dripY = spoutY + drainProgress * 44
+      const dripAlpha = 1 - drainProgress * 0.55
+
+      this.context.globalAlpha = dripAlpha
+      drawBall(this.context, bucketCenterX, dripY, 8, ALLOWED_COLOR)
+      this.context.globalAlpha = 1
+    }
+
+    const clockRadius = 26
+    const clockY = spoutY + 76
+    drawClock(this.context, bucketCenterX, clockY, clockRadius, drainProgress, TRACK_COLOR)
+
+    this.context.fillStyle = MUTED_COLOR
+    const drainSeconds = (snapshot.drainIntervalMs / 1_000).toString().replace(/\.0$/, '')
+    this.context.fillText(`drain ${snapshot.drainRate} / ${drainSeconds}s`, bucketCenterX, clockY + clockRadius + 28)
+
+    this.context.textAlign = 'left'
+    this.context.font = '600 16px system-ui, sans-serif'
   }
 
   private drawDottedTrack(now: number, size: CanvasSize): void {
@@ -403,7 +957,6 @@ export class CanvasVisualizationEngine implements VisualizationController {
   private drawBoundaryLabel(x: number): void {
     this.context.fillStyle = MUTED_COLOR
     this.context.fillRect(x - 0.5, 0, 1, 24)
-    this.context.fillText('midnight', x + 8, 19)
   }
 
   private drawEvents(now: number, size: CanvasSize): void {
@@ -464,15 +1017,40 @@ export class CanvasVisualizationEngine implements VisualizationController {
     }
   }
 
+  private drawNowLine(size: CanvasSize): void {
+    const x = size.width / 2
+
+    this.context.save()
+    this.context.strokeStyle = 'rgba(233, 241, 244, 0.4)'
+    this.context.lineWidth = 1.5
+    this.context.setLineDash([5, 5])
+    this.context.beginPath()
+    this.context.moveTo(x, 0)
+    this.context.lineTo(x, size.height)
+    this.context.stroke()
+    this.context.restore()
+  }
+
   private drawNowAndRemaining(now: number, size: CanvasSize): void {
+    this.context.fillStyle = MUTED_COLOR
+    this.context.fillText('now', size.width / 2 + 7, size.height - 14)
+
+    const algorithmsWithOwnRemainingDisplay: RateLimitAlgorithm[] = [
+      'fixed-window',
+      'floating-window',
+      'token-bucket',
+      'leaky-bucket',
+    ]
+
+    if (algorithmsWithOwnRemainingDisplay.includes(this.getConfig().algorithm)) {
+      return
+    }
+
     const remaining = this.limiter.remaining(now)
     const formattedRemaining = Number.isInteger(remaining)
       ? remaining.toFixed(0)
       : remaining.toFixed(1)
 
-    this.context.fillStyle = MUTED_COLOR
-    this.context.fillRect(size.width / 2 - 6, size.height - 32, 1.5, 18)
-    this.context.fillText('now', size.width / 2 + 7, size.height - 14)
     this.context.textAlign = 'right'
     this.context.fillText(
       `remaining = ${formattedRemaining}`,
@@ -491,6 +1069,10 @@ export class CanvasVisualizationEngine implements VisualizationController {
       return event.allowed
     }).length
     const blocked = this.events.length - allowed
+    const floatingWindow: FloatingWindowSnapshot | undefined =
+      this.limiter instanceof FloatingWindowLimiter
+        ? this.limiter.snapshot(now)
+        : undefined
 
     this.lastSnapshotAt = now
     this.onSnapshot({
@@ -499,11 +1081,13 @@ export class CanvasVisualizationEngine implements VisualizationController {
       remaining: this.limiter.remaining(now),
       playing: this.playing,
       started: this.started,
+      stopped: this.stopped,
+      floatingWindow,
     })
   }
 
   private handleResize(): void {
-    this.draw(performance.now())
+    this.draw(this.virtualNow)
   }
 
   private handleIntersection(entries: IntersectionObserverEntry[]): void {

@@ -4,6 +4,7 @@ export type RateLimitAlgorithm =
   | 'sliding-window'
   | 'floating-window'
   | 'token-bucket'
+  | 'leaky-bucket'
 
 export interface RateLimitOptions {
   limit: number
@@ -160,6 +161,11 @@ export class SlidingWindowLimiter implements RateLimiter {
     return Math.max(this.limit - this.timestamps.length, 0)
   }
 
+  public count(now: number): number {
+    this.refresh(now)
+    return this.timestamps.length
+  }
+
   private refresh(now: number): void {
     const cutoff = now - this.windowMs
     const firstRelevantIndex = this.timestamps.findIndex(
@@ -253,6 +259,14 @@ export class FloatingWindowLimiter implements RateLimiter {
   }
 }
 
+export interface TokenBucketSnapshot {
+  tokens: number
+  capacity: number
+  refillIntervalMs: number
+  refillRate: number
+  msSinceRefill: number
+}
+
 export class TokenBucketLimiter implements RateLimiter {
   private readonly capacity: number
   private readonly refillIntervalMs: number
@@ -295,6 +309,18 @@ export class TokenBucketLimiter implements RateLimiter {
     return this.tokens
   }
 
+  public snapshot(now: number): TokenBucketSnapshot {
+    this.refill(now)
+
+    return {
+      tokens: this.tokens,
+      capacity: this.capacity,
+      refillIntervalMs: this.refillIntervalMs,
+      refillRate: this.refillRate,
+      msSinceRefill: now - this.lastRefilledAt,
+    }
+  }
+
   private refill(now: number): void {
     const elapsed = now - this.lastRefilledAt
 
@@ -308,6 +334,75 @@ export class TokenBucketLimiter implements RateLimiter {
       this.tokens + intervals * this.refillRate,
     )
     this.lastRefilledAt += intervals * this.refillIntervalMs
+  }
+}
+
+export interface LeakyBucketSnapshot {
+  capacity: number
+  queueDepth: number
+  drainIntervalMs: number
+  drainRate: number
+  msSinceDrain: number
+}
+
+export class LeakyBucketLimiter implements RateLimiter {
+  private readonly capacity: number
+  private readonly drainIntervalMs: number
+  private readonly drainRate: number
+  private queueDepth = 0
+  private lastDrainedAt: number
+
+  public constructor(options: RateLimitOptions, now: number) {
+    this.capacity = positiveInteger(options.limit, 1)
+    this.drainIntervalMs = Math.max(options.refillIntervalMs, 1)
+    this.drainRate = positiveInteger(options.refillRate, 1)
+    this.lastDrainedAt = now
+  }
+
+  public attempt(now: number): RateLimitResult {
+    this.drain(now)
+    const allowed = this.queueDepth < this.capacity
+
+    if (allowed) {
+      this.queueDepth += 1
+    }
+
+    return {
+      allowed,
+      remaining: Math.max(this.capacity - this.queueDepth, 0),
+      retryAfterMs: allowed
+        ? 0
+        : Math.max(this.lastDrainedAt + this.drainIntervalMs - now, 0),
+    }
+  }
+
+  public remaining(now: number): number {
+    this.drain(now)
+    return Math.max(this.capacity - this.queueDepth, 0)
+  }
+
+  public snapshot(now: number): LeakyBucketSnapshot {
+    this.drain(now)
+
+    return {
+      capacity: this.capacity,
+      queueDepth: this.queueDepth,
+      drainIntervalMs: this.drainIntervalMs,
+      drainRate: this.drainRate,
+      msSinceDrain: now - this.lastDrainedAt,
+    }
+  }
+
+  private drain(now: number): void {
+    const elapsed = now - this.lastDrainedAt
+
+    if (elapsed < this.drainIntervalMs) {
+      return
+    }
+
+    const intervals = Math.floor(elapsed / this.drainIntervalMs)
+    this.queueDepth = Math.max(0, this.queueDepth - intervals * this.drainRate)
+    this.lastDrainedAt += intervals * this.drainIntervalMs
   }
 }
 
@@ -327,5 +422,7 @@ export function createRateLimiter(
       return new FloatingWindowLimiter(options)
     case 'token-bucket':
       return new TokenBucketLimiter(options, now)
+    case 'leaky-bucket':
+      return new LeakyBucketLimiter(options, now)
   }
 }

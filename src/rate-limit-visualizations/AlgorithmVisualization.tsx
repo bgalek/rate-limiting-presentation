@@ -7,6 +7,7 @@ import {
 import {
   IconPlayerPause,
   IconPlayerPlay,
+  IconPlayerStop,
 } from '@tabler/icons-react'
 import {
   CanvasVisualizationEngine,
@@ -29,6 +30,8 @@ export interface AlgorithmVisualizationProps {
   windowMs?: number
   refillIntervalMs?: number
   refillRate?: number
+  burstMode?: boolean
+  steadyMode?: boolean
   autoPlay?: boolean
   startPaused?: boolean
   showBoundaryLabels?: boolean
@@ -45,6 +48,7 @@ const EMPTY_SNAPSHOT: VisualizationSnapshot = {
   remaining: 0,
   playing: true,
   started: true,
+  stopped: false,
 }
 
 export default function AlgorithmVisualization({
@@ -53,6 +57,8 @@ export default function AlgorithmVisualization({
   windowMs = 8_000,
   refillIntervalMs = 1_800,
   refillRate = 1,
+  burstMode = false,
+  steadyMode = false,
   autoPlay = true,
   startPaused = false,
   showBoundaryLabels = true,
@@ -74,6 +80,8 @@ export default function AlgorithmVisualization({
     windowMs,
     refillIntervalMs,
     refillRate,
+    burstMode,
+    steadyMode,
     autoPlay,
     startPaused,
     showBoundaryLabels,
@@ -89,6 +97,8 @@ export default function AlgorithmVisualization({
         windowMs,
         refillIntervalMs,
         refillRate,
+        burstMode,
+        steadyMode,
         autoPlay,
         startPaused,
         showBoundaryLabels,
@@ -104,6 +114,8 @@ export default function AlgorithmVisualization({
       onSnapshot,
       refillIntervalMs,
       refillRate,
+      burstMode,
+      steadyMode,
       showBoundaryLabels,
       startPaused,
       windowMs,
@@ -147,6 +159,10 @@ export default function AlgorithmVisualization({
     controllerRef.current?.setPlaying(!snapshot.playing)
   }
 
+  function toggleStopped(): void {
+    controllerRef.current?.setStopped(!snapshot.stopped)
+  }
+
   function start(): void {
     controllerRef.current?.start()
   }
@@ -188,6 +204,18 @@ export default function AlgorithmVisualization({
               <IconPlayerPlay aria-hidden="true" size={20} stroke={2} />
             )}
             {snapshot.playing ? 'Pause' : 'Resume'} stream
+          </button>
+          <button
+            type="button"
+            className={SECONDARY_BUTTON_CLASS}
+            onClick={toggleStopped}
+          >
+            {snapshot.stopped ? (
+              <IconPlayerPlay aria-hidden="true" size={20} stroke={2} />
+            ) : (
+              <IconPlayerStop aria-hidden="true" size={20} stroke={2} />
+            )}
+            {snapshot.stopped ? 'Resume' : 'Stop'}
           </button>
         </div>
       )}
