@@ -22,8 +22,13 @@ const INITIAL_SNAPSHOT: VisualizationSnapshot = {
   allowed: 0,
   blocked: 0,
   remaining: 6,
+  limit: 6,
+  resetMs: 0,
+  retryAfterMs: 0,
+  lastAllowed: null,
   playing: false,
   started: true,
+  stopped: false,
 }
 
 export default function DualSlidingWindowVisualization({

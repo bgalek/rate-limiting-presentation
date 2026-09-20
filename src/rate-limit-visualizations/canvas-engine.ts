@@ -7,6 +7,7 @@ import {
   createRateLimiter,
   type FloatingWindowSnapshot,
   type RateLimitAlgorithm,
+  type RateLimitResult,
   type RateLimiter,
 } from './algorithms'
 
@@ -44,6 +45,10 @@ export interface VisualizationSnapshot {
   allowed: number
   blocked: number
   remaining: number
+  limit: number
+  resetMs: number
+  retryAfterMs: number
+  lastAllowed: boolean | null
   playing: boolean
   started: boolean
   stopped: boolean
@@ -255,6 +260,7 @@ export class CanvasVisualizationEngine implements VisualizationController {
   private evictionPopStarts = new Map<number, number>()
   private virtualNow = 0
   private lastRealTime = 0
+  private lastResult: RateLimitResult | null = null
 
   public constructor(
     canvas: HTMLCanvasElement,
@@ -371,6 +377,7 @@ export class CanvasVisualizationEngine implements VisualizationController {
 
   private attempt(now: number): void {
     const result = this.limiter.attempt(now)
+    this.lastResult = result
 
     this.events.push({
       id: this.nextEventId,
@@ -400,6 +407,7 @@ export class CanvasVisualizationEngine implements VisualizationController {
     this.limiterKey = nextLimiterKey
     this.limiter = createRateLimiter(config.algorithm, config, now)
     this.events = []
+    this.lastResult = null
     this.lastTokenCount = -1
     this.tokenFallStarts.clear()
     this.tokenLeaveStarts.clear()
@@ -1079,6 +1087,10 @@ export class CanvasVisualizationEngine implements VisualizationController {
       allowed,
       blocked,
       remaining: this.limiter.remaining(now),
+      limit: this.getConfig().limit,
+      resetMs: this.limiter.resetMs(now),
+      retryAfterMs: this.limiter.retryAfterMs(now),
+      lastAllowed: this.lastResult?.allowed ?? null,
       playing: this.playing,
       started: this.started,
       stopped: this.stopped,

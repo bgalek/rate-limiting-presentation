@@ -46,6 +46,10 @@ const EMPTY_SNAPSHOT: VisualizationSnapshot = {
   allowed: 0,
   blocked: 0,
   remaining: 0,
+  limit: 0,
+  resetMs: 0,
+  retryAfterMs: 0,
+  lastAllowed: null,
   playing: true,
   started: true,
   stopped: false,
@@ -71,6 +75,7 @@ export default function AlgorithmVisualization({
   const [snapshot, setSnapshot] = useState<VisualizationSnapshot>({
     ...EMPTY_SNAPSHOT,
     remaining: limit,
+    limit,
     started: !startPaused,
   })
   const controllerRef = useRef<VisualizationController | null>(null)

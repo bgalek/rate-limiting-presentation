@@ -70,8 +70,19 @@ button { font: inherit; }
 .visual-copy li svg { color: #43d7e8; }
 .visual-copy li:last-child svg { color: #ffd43b; }
 .live-canvas { min-width: 0; }
-.reveal h2 + .live-canvas, .reveal .formula + .live-canvas { margin-top: 46px; }
 .live-canvas > p { margin-top: 12px; font-size: 14px; text-align: center; }
+
+.algorithm-stage { display: flex; align-items: flex-start; gap: 26px; }
+.reveal h2 + .algorithm-stage, .reveal .formula + .algorithm-stage { margin-top: 46px; }
+.algorithm-stage__canvas { flex: 1 1 68%; min-width: 0; }
+.response-headers { flex: 0 0 250px; padding: 16px 18px; border: 1px solid #334752; border-radius: 8px; background: #0d151a; font-family: ui-monospace, monospace; }
+.response-headers__status { padding-bottom: 10px; margin-bottom: 10px; border-bottom: 1px dashed #334752; color: #43d7e8; font: 800 13px ui-monospace, monospace; letter-spacing: .04em; }
+.response-headers__status[data-blocked] { color: #ff7aa7; }
+.response-headers__row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 0; }
+.response-headers__row span { color: #8fa0aa; font: 700 11px ui-monospace, monospace; letter-spacing: .05em; text-transform: uppercase; }
+.response-headers__row strong { color: #ffd43b; font-size: 15px; }
+.response-headers__row--retry strong { color: #526069; }
+.response-headers__row--retry[data-active] strong { color: #ff7aa7; }
 .legend-dot { display: inline-block; width: 11px; height: 11px; margin: 0 5px 0 15px; border-radius: 50%; background: #43d7e8; }
 .legend-dash { display: inline-block; width: 15px; height: 5px; margin: 0 5px 2px 15px; border-radius: 3px; background: #ffd43b; }
 
