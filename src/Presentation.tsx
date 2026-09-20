@@ -6,15 +6,17 @@ import {
   IconLock, IconNetwork,
   IconServer, IconShield, IconStack2, IconTarget, IconUsers, IconWifi,
 } from '@tabler/icons-react'
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ComponentType, type CSSProperties, type ReactNode } from 'react'
 import 'reveal.js/reveal.css'
 import {
   AlgorithmVisualization,
   FixedWindowVisualization,
   FloatingWindowVisualization,
   LeakyBucketVisualization,
+  ResponseHeaders,
   SlidingWindowVisualization,
   TokenBucketVisualization,
+  type AlgorithmVisualizationProps,
   type VisualizationController,
   type VisualizationSnapshot,
 } from './rate-limit-visualizations'
@@ -46,6 +48,29 @@ function RoleLine({ children, role }: { children: ReactNode; role: 'bad' | 'good
 
 function Metric({ label, tone = 'cyan', value }: { label: string; tone?: 'cyan' | 'yellow'; value: string }) {
   return <div className={`metric metric--${tone}`}><span>{label}</span><strong>{value}</strong></div>
+}
+
+type AlgorithmDemoVisualizationProps = Omit<AlgorithmVisualizationProps, 'algorithm'>
+
+function AlgorithmDemo({
+  component: Visualization,
+  legend,
+  ...visualizationProps
+}: AlgorithmDemoVisualizationProps & {
+  component: ComponentType<AlgorithmDemoVisualizationProps>
+  legend?: ReactNode
+}) {
+  const [snapshot, setSnapshot] = useState<VisualizationSnapshot | null>(null)
+
+  return (
+    <div className="algorithm-stage">
+      <div className="live-canvas algorithm-stage__canvas">
+        <Visualization {...visualizationProps} onSnapshot={setSnapshot} />
+        {legend}
+      </div>
+      <ResponseHeaders snapshot={snapshot} />
+    </div>
+  )
 }
 
 function FloatingWindowFormula() {
@@ -86,8 +111,11 @@ function FloatingWindowFormula() {
           <span className="formula-value">{snapshot ? `${snapshot.remaining.toFixed(1)} / ${LIMIT}` : '—'}</span>
         </span>
       </div>
-      <div className="live-canvas">
-        <FloatingWindowVisualization limit={LIMIT} height={280} onSnapshot={setSnapshot} />
+      <div className="algorithm-stage">
+        <div className="live-canvas algorithm-stage__canvas">
+          <FloatingWindowVisualization limit={LIMIT} height={196} onSnapshot={setSnapshot} />
+        </div>
+        <ResponseHeaders snapshot={snapshot} />
       </div>
     </>
   )
@@ -703,7 +731,12 @@ export default function Presentation() {
       <Slide>
         <Eyebrow>Algorithm 01</Eyebrow>
         <h2>Fixed Window</h2>
-        <div className="live-canvas"><FixedWindowVisualization limit={6} height={400} /><p><i className="legend-dot" /> allowed <i className="legend-dash" /> rejected</p></div>
+        <AlgorithmDemo
+          component={FixedWindowVisualization}
+          limit={6}
+          height={420}
+          legend={<p><i className="legend-dot" /> allowed <i className="legend-dash" /> rejected</p>}
+        />
         <Notes>
           Divide time into fixed intervals (e.g. 1-minute boxes). Keep a counter per key, per window. Each request increments the counter; once it exceeds the limit, reject. When the window rolls over, the limit resets.
           {' '}Pros: very simple to implement; O(1) memory and CPU, cheap at any scale; easy to explain; resets are predictable, so debugging is easy too.
@@ -715,7 +748,14 @@ export default function Presentation() {
       <Slide>
         <Eyebrow>Algorithm 02</Eyebrow>
         <h2>Token Bucket</h2>
-        <div className="live-canvas"><TokenBucketVisualization limit={6} refillIntervalMs={1_000} refillRate={1} height={400} /><p><i className="legend-dot" /> token available <i className="legend-dash" /> request rejected</p></div>
+        <AlgorithmDemo
+          component={TokenBucketVisualization}
+          limit={6}
+          refillIntervalMs={1_000}
+          refillRate={1}
+          height={420}
+          legend={<p><i className="legend-dot" /> token available <i className="legend-dash" /> request rejected</p>}
+        />
         <Notes>
           A bucket has max capacity M and refill rate R/second. Each request consumes a token (or several, for weighted rate limiting). Enough tokens → allow; otherwise reject. Token count is computed lazily at request time, so there's no background work.
           {' '}Pros: burst tolerance — spend all your tokens at once, no problem; O(1) memory per key; easy for weighted costs (LLM gateways price by model tokens); easy to explain ("100 req/s sustained, burst to 500" → bucket size 500, refills 100/s); wide support (Guava RateLimiter, Envoy, Kong, cloud API gateways ship it by default).
@@ -727,7 +767,14 @@ export default function Presentation() {
       <Slide>
         <Eyebrow>Algorithm 03</Eyebrow>
         <h2>Leaky Bucket</h2>
-        <div className="live-canvas"><LeakyBucketVisualization limit={6} refillIntervalMs={1_000} refillRate={1} height={400} /><p><i className="legend-dot" /> queued <i className="legend-dash" /> rejected</p></div>
+        <AlgorithmDemo
+          component={LeakyBucketVisualization}
+          limit={6}
+          refillIntervalMs={1_000}
+          refillRate={1}
+          height={420}
+          legend={<p><i className="legend-dot" /> queued <i className="legend-dash" /> rejected</p>}
+        />
         <Notes>
           Requests are queued in a bucket with fixed capacity; the queue drains at a constant rate. Any new request that overflows the bucket is rejected. Output is a constant stream of requests, regardless of how bursty the input traffic is.
           {' '}Pros: constant-rate output — the backend knows what to expect, no unexpected spikes; tolerates short-term bursts by just processing them at a steady rate.
@@ -739,7 +786,7 @@ export default function Presentation() {
       <Slide>
         <Eyebrow>Algorithm 04</Eyebrow>
         <h2>Sliding Window Log</h2>
-        <div className="live-canvas"><SlidingWindowVisualization limit={6} height={400} /></div>
+        <AlgorithmDemo component={SlidingWindowVisualization} limit={6} height={420} />
         <Notes>
           Store [timestamp][key] per request. On each new request, evict entries older than the window, count what remains, and decide allow/reject. Because the window follows the wall clock, enforcement is exact.
           {' '}Pros: perfectly accurate; because the log is a record of recent requests, it helps resolve disputes ("you rate limited me unfairly").

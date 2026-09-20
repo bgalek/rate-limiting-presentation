@@ -22,6 +22,10 @@ export interface RateLimitResult {
 export interface RateLimiter {
   attempt(now: number): RateLimitResult
   remaining(now: number): number
+  /** Time until at least one more request would be allowed. */
+  retryAfterMs(now: number): number
+  /** Time until remaining capacity is fully restored to the limit. */
+  resetMs(now: number): number
 }
 
 function positiveInteger(value: number, fallback: number): number {
@@ -61,6 +65,14 @@ export class FixedWindowLimiter implements RateLimiter {
   public remaining(now: number): number {
     this.refresh(now)
     return Math.max(this.limit - this.count, 0)
+  }
+
+  public retryAfterMs(now: number): number {
+    return this.windowMs - (now % this.windowMs)
+  }
+
+  public resetMs(now: number): number {
+    return this.windowMs - (now % this.windowMs)
   }
 
   private refresh(now: number): void {
@@ -112,6 +124,17 @@ export class UserFixedWindowLimiter implements RateLimiter {
     return Math.max(this.limit - this.count, 0)
   }
 
+  public retryAfterMs(now: number): number {
+    this.refresh(now)
+    return this.windowStartedAt === null
+      ? 0
+      : Math.max(this.windowStartedAt + this.windowMs - now, 0)
+  }
+
+  public resetMs(now: number): number {
+    return this.retryAfterMs(now)
+  }
+
   public getWindowStartedAt(now: number): number | null {
     this.refresh(now)
     return this.windowStartedAt
@@ -159,6 +182,20 @@ export class SlidingWindowLimiter implements RateLimiter {
   public remaining(now: number): number {
     this.refresh(now)
     return Math.max(this.limit - this.timestamps.length, 0)
+  }
+
+  public retryAfterMs(now: number): number {
+    this.refresh(now)
+    return this.timestamps.length === 0
+      ? 0
+      : Math.max(this.timestamps[0] + this.windowMs - now, 0)
+  }
+
+  public resetMs(now: number): number {
+    this.refresh(now)
+    return this.timestamps.length === 0
+      ? 0
+      : Math.max(this.timestamps[this.timestamps.length - 1] + this.windowMs - now, 0)
   }
 
   public count(now: number): number {
@@ -219,6 +256,14 @@ export class FloatingWindowLimiter implements RateLimiter {
   public remaining(now: number): number {
     this.refresh(now)
     return Math.max(this.limit - this.snapshot(now).estimate, 0)
+  }
+
+  public retryAfterMs(now: number): number {
+    return this.windowMs - (now % this.windowMs)
+  }
+
+  public resetMs(now: number): number {
+    return this.windowMs - (now % this.windowMs)
   }
 
   public snapshot(now: number): FloatingWindowSnapshot {
@@ -304,6 +349,24 @@ export class TokenBucketLimiter implements RateLimiter {
     return Math.floor(this.tokens)
   }
 
+  public retryAfterMs(now: number): number {
+    this.refill(now)
+    return this.tokens >= 1
+      ? 0
+      : this.refillIntervalMs - (now - this.lastRefilledAt)
+  }
+
+  public resetMs(now: number): number {
+    this.refill(now)
+
+    if (this.tokens >= this.capacity) {
+      return 0
+    }
+
+    const ticksNeeded = Math.ceil((this.capacity - this.tokens) / this.refillRate)
+    return ticksNeeded * this.refillIntervalMs - (now - this.lastRefilledAt)
+  }
+
   public tokenCount(now: number): number {
     this.refill(now)
     return this.tokens
@@ -379,6 +442,24 @@ export class LeakyBucketLimiter implements RateLimiter {
   public remaining(now: number): number {
     this.drain(now)
     return Math.max(this.capacity - this.queueDepth, 0)
+  }
+
+  public retryAfterMs(now: number): number {
+    this.drain(now)
+    return this.queueDepth < this.capacity
+      ? 0
+      : this.drainIntervalMs - (now - this.lastDrainedAt)
+  }
+
+  public resetMs(now: number): number {
+    this.drain(now)
+
+    if (this.queueDepth <= 0) {
+      return 0
+    }
+
+    const ticksNeeded = Math.ceil(this.queueDepth / this.drainRate)
+    return ticksNeeded * this.drainIntervalMs - (now - this.lastDrainedAt)
   }
 
   public snapshot(now: number): LeakyBucketSnapshot {
