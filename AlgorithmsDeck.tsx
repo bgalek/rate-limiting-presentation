@@ -8,6 +8,7 @@ import {
   LeakyBucketVisualization,
   ResponseHeaders,
   SlidingWindowVisualization,
+  ThunderingHerdDemo,
   TokenBucketVisualization,
   type AlgorithmVisualizationProps,
   type VisualizationSnapshot,
@@ -76,7 +77,7 @@ function FloatingWindowFormula() {
       </div>
       <div className="algorithm-stage">
         <div className="live-canvas algorithm-stage__canvas">
-          <FloatingWindowVisualization limit={LIMIT} height={196} speed={2} onSnapshot={setSnapshot} />
+          <FloatingWindowVisualization limit={LIMIT} height={196} onSnapshot={setSnapshot} />
         </div>
         <ResponseHeaders snapshot={snapshot} />
       </div>
@@ -126,7 +127,6 @@ export default function AlgorithmsDeck() {
           component={FixedWindowVisualization}
           limit={6}
           height={420}
-          speed={2}
           legend={<p><i className="legend-dot" /> allowed <i className="legend-dash" /> rejected</p>}
         />
         <Notes>
@@ -138,6 +138,15 @@ export default function AlgorithmsDeck() {
       </Slide>
 
       <Slide>
+        <h2>Fixed Window: the thundering herd</h2>
+        <ThunderingHerdDemo />
+        <Notes>
+          Four clients send requests throughout one fixed window. Each client uses its four-request budget, so its next four requests receive 429 and a reset target at the same window boundary.
+          {' '}When that boundary arrives, every client retries all four rejected requests together. The rate limiter is being obeyed, but the service sees 16 requests in one burst instead of the normal spread-out traffic.
+        </Notes>
+      </Slide>
+
+      <Slide>
         <h2>Token Bucket</h2>
         <AlgorithmDemo
           component={TokenBucketVisualization}
@@ -145,7 +154,6 @@ export default function AlgorithmsDeck() {
           refillIntervalMs={1_000}
           refillRate={1}
           height={420}
-          speed={2}
           legend={<p><i className="legend-dot" /> token available <i className="legend-dash" /> request rejected</p>}
         />
         <Notes>
@@ -164,7 +172,6 @@ export default function AlgorithmsDeck() {
           refillIntervalMs={1_000}
           refillRate={1}
           height={420}
-          speed={2}
           legend={<p><i className="legend-dot" /> queued <i className="legend-dash" /> rejected</p>}
         />
         <Notes>
@@ -177,7 +184,7 @@ export default function AlgorithmsDeck() {
 
       <Slide>
         <h2>Sliding Window Log</h2>
-        <AlgorithmDemo component={SlidingWindowVisualization} limit={6} height={420} speed={2} />
+        <AlgorithmDemo component={SlidingWindowVisualization} limit={6} height={420} />
         <Notes>
           Store [timestamp][key] per request. On each new request, evict entries older than the window, count what remains, and decide allow/reject. Because the window follows the wall clock, enforcement is exact.
           {' '}Pros: perfectly accurate; because the log is a record of recent requests, it helps resolve disputes ("you rate limited me unfairly").
