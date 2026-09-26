@@ -73,13 +73,6 @@ export default function ScriptVisualDeck() {
         }
         return slides
       })}
-
-      <Slide backgroundGradient="#ffffff">
-        <div className="shrug-slide">
-          <span className="shrug-slide__emoji shrug-slide__emoji--dark">¯\_(ツ)_/¯</span>
-        </div>
-        <Notes>No punchline — just the honest answer to "which algorithm wins?"</Notes>
-      </Slide>
     </DeckShell>
   )
 }
