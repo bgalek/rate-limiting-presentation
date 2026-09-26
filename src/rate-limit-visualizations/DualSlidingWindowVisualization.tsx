@@ -25,10 +25,13 @@ const INITIAL_SNAPSHOT: VisualizationSnapshot = {
   limit: 6,
   resetMs: 0,
   retryAfterMs: 0,
+  clockEpochSeconds: null,
+  resetEpochSeconds: null,
   lastAllowed: null,
   playing: false,
   started: true,
   stopped: false,
+  redisState: '—',
 }
 
 export default function DualSlidingWindowVisualization({

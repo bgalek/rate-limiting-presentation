@@ -1,10 +1,10 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
-import MainDeck from './decks/MainDeck.tsx'
+import AlgorithmsDeck from './decks/AlgorithmsDeck.tsx'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <MainDeck />
+    <AlgorithmsDeck />
   </StrictMode>,
 )

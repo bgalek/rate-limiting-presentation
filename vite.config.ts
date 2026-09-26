@@ -18,7 +18,6 @@ export default defineConfig({
         algorithms: resolve(import.meta.dirname, 'algorithms.html'),
         scriptText: resolve(import.meta.dirname, 'script-text.html'),
         scriptVisual: resolve(import.meta.dirname, 'script-visual.html'),
-        scriptVisual2: resolve(import.meta.dirname, 'script-visual-2.html'),
       },
     },
   },

@@ -5,6 +5,7 @@ import {
   useState,
 } from 'react'
 import {
+  IconDatabase,
   IconPlayerPause,
   IconPlayerPlay,
   IconPlayerStop,
@@ -19,6 +20,7 @@ import type { RateLimitAlgorithm } from './algorithms'
 import {
   CONTROLS_CLASS,
   PRIMARY_BUTTON_CLASS,
+  REDIS_BADGE_CLASS,
   SECONDARY_BUTTON_CLASS,
   START_OVERLAY_CLASS,
 } from './classNames'
@@ -34,10 +36,14 @@ export interface AlgorithmVisualizationProps {
   steadyMode?: boolean
   autoPlay?: boolean
   startPaused?: boolean
+  /** Show the canvas immediately (unlike startPaused), but with the stream paused — resuming re-enables normal autoPlay behavior. */
+  startStreamPaused?: boolean
   showBoundaryLabels?: boolean
   hideControls?: boolean
   height?: number
   className?: string
+  /** Multiplies how fast the visualization's internal clock advances relative to real time (default 1). */
+  speed?: number
   onControllerReady?: (controller: VisualizationController | null) => void
   onSnapshot?: (snapshot: VisualizationSnapshot) => void
 }
@@ -49,10 +55,13 @@ const EMPTY_SNAPSHOT: VisualizationSnapshot = {
   limit: 0,
   resetMs: 0,
   retryAfterMs: 0,
+  clockEpochSeconds: null,
+  resetEpochSeconds: null,
   lastAllowed: null,
   playing: true,
   started: true,
   stopped: false,
+  redisState: '—',
 }
 
 export default function AlgorithmVisualization({
@@ -65,10 +74,12 @@ export default function AlgorithmVisualization({
   steadyMode = false,
   autoPlay = true,
   startPaused = false,
+  startStreamPaused = false,
   showBoundaryLabels = true,
   hideControls = false,
   height = 176,
   className = '',
+  speed = 1,
   onControllerReady,
   onSnapshot,
 }: AlgorithmVisualizationProps) {
@@ -77,6 +88,7 @@ export default function AlgorithmVisualization({
     remaining: limit,
     limit,
     started: !startPaused,
+    playing: !startStreamPaused,
   })
   const controllerRef = useRef<VisualizationController | null>(null)
   const configRef = useRef<VisualizationConfig>({
@@ -89,7 +101,9 @@ export default function AlgorithmVisualization({
     steadyMode,
     autoPlay,
     startPaused,
+    startStreamPaused,
     showBoundaryLabels,
+    speed,
   })
   const onControllerReadyRef = useRef(onControllerReady)
   const onSnapshotRef = useRef(onSnapshot)
@@ -106,7 +120,9 @@ export default function AlgorithmVisualization({
         steadyMode,
         autoPlay,
         startPaused,
+        startStreamPaused,
         showBoundaryLabels,
+        speed,
       }
       onControllerReadyRef.current = onControllerReady
       onSnapshotRef.current = onSnapshot
@@ -122,7 +138,9 @@ export default function AlgorithmVisualization({
       burstMode,
       steadyMode,
       showBoundaryLabels,
+      speed,
       startPaused,
+      startStreamPaused,
       windowMs,
     ],
   )
@@ -222,6 +240,12 @@ export default function AlgorithmVisualization({
             )}
             {snapshot.stopped ? 'Resume' : 'Stop'}
           </button>
+          {algorithm !== 'sliding-window' && algorithm !== 'floating-window' && (
+            <span className={REDIS_BADGE_CLASS} title="What this algorithm stores in Redis for this key">
+              <IconDatabase aria-hidden="true" size={18} stroke={2} />
+              {snapshot.redisState}
+            </span>
+          )}
         </div>
       )}
     </div>

@@ -15,3 +15,6 @@ export const CONTROLS_CLASS =
 
 export const FIELD_INPUT_CLASS =
   'min-h-11 w-24 rounded-lg border border-rate-border/60 bg-rate-panel px-3 py-2 text-base font-semibold text-rate-text outline-none focus:border-rate-accent focus:ring-3 focus:ring-rate-accent/25'
+
+export const REDIS_BADGE_CLASS =
+  'inline-flex min-h-11 items-center gap-2 whitespace-nowrap rounded-lg border border-rate-border/45 bg-rate-panel px-3 py-2.5 font-mono text-sm text-rate-text/80'

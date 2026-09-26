@@ -12,11 +12,22 @@ function formatSeconds(ms: number): string {
   return `${Math.ceil(ms / 1_000)}s`
 }
 
+function formatClock(epochSeconds: number | null): string {
+  return epochSeconds === null
+    ? '—'
+    : `${new Date(epochSeconds * 1_000).toISOString().slice(11, 19)} UTC`
+}
+
 export default function ResponseHeaders({ snapshot }: ResponseHeadersProps) {
   const blocked = snapshot?.lastAllowed === false
 
   return (
     <div className="response-headers">
+      <div className="response-headers__clock">
+        <span>clock</span>
+        <strong>{formatClock(snapshot?.clockEpochSeconds ?? null)}</strong>
+        <small>{snapshot?.clockEpochSeconds ?? '—'}</small>
+      </div>
       <div className="response-headers__status" data-blocked={blocked || undefined}>
         {blocked ? '429 Too Many Requests' : '200 OK'}
       </div>
@@ -30,7 +41,12 @@ export default function ResponseHeaders({ snapshot }: ResponseHeadersProps) {
       </div>
       <div className="response-headers__row">
         <span>X-RateLimit-Reset</span>
-        <strong>{snapshot && snapshot.resetMs > 0 ? formatSeconds(snapshot.resetMs) : '—'}</strong>
+        <strong className="response-headers__reset-value">
+          {snapshot?.resetEpochSeconds ?? '—'}
+          {snapshot?.resetEpochSeconds !== null && snapshot?.resetEpochSeconds !== undefined ? (
+            <small>({formatClock(snapshot.resetEpochSeconds)})</small>
+          ) : null}
+        </strong>
       </div>
       <div className="response-headers__row response-headers__row--retry" data-active={blocked || undefined}>
         <span>Retry-After</span>

@@ -17,10 +17,14 @@ const MUTED_COLOR = '#ced4da'
 const TRACK_COLOR = '#adb5bd'
 const WINDOW_COLOR = 'rgba(76, 110, 245, 0.24)'
 const WINDOW_BORDER_COLOR = 'rgba(145, 167, 255, 0.28)'
+// Below this height there isn't room for the key/now/remaining text overlays
+// without them colliding (used for small inline rows, e.g. the cop-arena decks).
+const COMPACT_HEIGHT_THRESHOLD = 90
 const BALL_FALL_DURATION_MS = 380
 const BALL_LEAVE_DURATION_MS = 260
 const REJECT_BUZZ_DURATION_MS = 420
 const EVICTION_POP_DURATION_MS = 500
+const SIMULATION_START_EPOCH_MS = 1_700_000_000_000
 
 export interface VisualizationConfig {
   algorithm: RateLimitAlgorithm
@@ -32,13 +36,25 @@ export interface VisualizationConfig {
   steadyMode: boolean
   autoPlay: boolean
   startPaused: boolean
+  /** Show the canvas immediately (unlike startPaused), but with the stream paused — resuming re-enables normal autoPlay behavior. */
+  startStreamPaused: boolean
   showBoundaryLabels: boolean
+  /** Multiplies how fast the visualization's internal clock advances relative to real time. */
+  speed?: number
 }
 
 export interface RequestEvent {
   id: number
   timestamp: number
   allowed: boolean
+}
+
+export interface SlidingWindowLogEntry {
+  id: number
+  /** Epoch ms, matching the clock shown alongside the response headers — this is the ZADD score. */
+  timestamp: number
+  /** 'stored' sits in the Redis ZSET; 'evicting' is mid pop-out (ZREMRANGEBYSCORE just dropped it); 'rejected' was checked (ZCARD) but never written. */
+  state: 'stored' | 'evicting' | 'rejected'
 }
 
 export interface VisualizationSnapshot {
@@ -48,11 +64,16 @@ export interface VisualizationSnapshot {
   limit: number
   resetMs: number
   retryAfterMs: number
+  clockEpochSeconds: number | null
+  resetEpochSeconds: number | null
   lastAllowed: boolean | null
   playing: boolean
   started: boolean
   stopped: boolean
   floatingWindow?: FloatingWindowSnapshot
+  slidingWindowLog?: SlidingWindowLogEntry[]
+  /** Compact description of what this algorithm would persist in Redis for this key, updated live as requests land. */
+  redisState: string
 }
 
 export interface VisualizationController {
@@ -260,6 +281,8 @@ export class CanvasVisualizationEngine implements VisualizationController {
   private evictionPopStarts = new Map<number, number>()
   private virtualNow = 0
   private lastRealTime = 0
+  private readonly simulationStartVirtualNow: number
+  private readonly simulationStartEpochMs: number
   private lastResult: RateLimitResult | null = null
 
   public constructor(
@@ -279,13 +302,16 @@ export class CanvasVisualizationEngine implements VisualizationController {
     this.onSnapshot = onSnapshot
     this.virtualNow = performance.now()
     this.lastRealTime = this.virtualNow
+    this.simulationStartVirtualNow = this.virtualNow
+    this.simulationStartEpochMs =
+      SIMULATION_START_EPOCH_MS + (this.virtualNow % Math.max(getConfig().windowMs, 1))
     this.limiter = createRateLimiter(
       getConfig().algorithm,
       getConfig(),
       this.virtualNow,
     )
     this.started = !getConfig().startPaused
-    this.playing = getConfig().autoPlay
+    this.playing = getConfig().startStreamPaused ? false : getConfig().autoPlay
     this.frame = this.frame.bind(this)
 
     this.resizeObserver = new ResizeObserver(this.handleResize.bind(this))
@@ -337,7 +363,7 @@ export class CanvasVisualizationEngine implements VisualizationController {
     this.lastRealTime = realNow
 
     if (!this.stopped) {
-      this.virtualNow += delta
+      this.virtualNow += delta * (this.getConfig().speed ?? 1)
     }
 
     const now = this.virtualNow
@@ -424,10 +450,14 @@ export class CanvasVisualizationEngine implements VisualizationController {
     this.context.clearRect(0, 0, size.width, size.height)
     this.context.font = '600 16px system-ui, sans-serif'
 
+    const compact = size.height < COMPACT_HEIGHT_THRESHOLD
+
     switch (config.algorithm) {
       case 'fixed-window':
         this.drawFixedWindows(now, size)
-        this.drawFixedWindowRemainingLabels(now, size)
+        if (!compact) {
+          this.drawFixedWindowRemainingLabels(now, size)
+        }
         break
       case 'user-fixed-window':
         this.drawUserFixedWindow(now, size)
@@ -446,30 +476,11 @@ export class CanvasVisualizationEngine implements VisualizationController {
         break
     }
 
-    this.drawKeyLabel(now, size)
     this.drawNowLine(size)
     this.drawEvents(now, size)
-    this.drawNowAndRemaining(now, size)
-  }
-
-  private drawKeyLabel(now: number, size: CanvasSize): void {
-    const config = this.getConfig()
-    const windowIndex = Math.floor(now / config.windowMs)
-    const identity = '203.0.113.7'
-    const keysByAlgorithm: Record<RateLimitAlgorithm, string> = {
-      'fixed-window': `rl:${identity}:${windowIndex}`,
-      'user-fixed-window': `rl:${identity}:${windowIndex}`,
-      'sliding-window': `rl:${identity}:log`,
-      'floating-window': `rl:${identity}:${windowIndex} (+ prev window's key)`,
-      'token-bucket': `rl:${identity}:bucket`,
-      'leaky-bucket': `rl:${identity}:queue`,
+    if (!compact) {
+      this.drawNowAndRemaining(now, size)
     }
-
-    this.context.font = '600 12px ui-monospace, monospace'
-    this.context.fillStyle = MUTED_COLOR
-    this.context.textAlign = 'left'
-    this.context.fillText(`key  ${keysByAlgorithm[config.algorithm]}`, 14, 20)
-    this.context.font = '600 16px system-ui, sans-serif'
   }
 
   private prepareCanvas(): CanvasSize {
@@ -525,7 +536,7 @@ export class CanvasVisualizationEngine implements VisualizationController {
       }
     }
 
-    this.context.font = '600 12px ui-monospace, monospace'
+    this.context.font = '600 24px ui-monospace, monospace'
     this.context.textAlign = 'center'
 
     for (let offset = -2; offset <= 2; offset += 1) {
@@ -634,16 +645,6 @@ export class CanvasVisualizationEngine implements VisualizationController {
       this.context.globalAlpha = 1
     }
 
-    if (this.limiter instanceof SlidingWindowLimiter) {
-      const count = this.limiter.count(now)
-
-      this.context.font = '600 13px ui-monospace, monospace'
-      this.context.fillStyle = ALLOWED_COLOR
-      this.context.textAlign = 'center'
-      this.context.fillText(`${count} timestamp${count === 1 ? '' : 's'} stored`, centerX, size.height / 2 - 46)
-      this.context.textAlign = 'left'
-      this.context.font = '600 16px system-ui, sans-serif'
-    }
   }
 
   private drawFloatingWindow(now: number, size: CanvasSize): void {
@@ -1081,6 +1082,14 @@ export class CanvasVisualizationEngine implements VisualizationController {
       this.limiter instanceof FloatingWindowLimiter
         ? this.limiter.snapshot(now)
         : undefined
+    const slidingWindowLog: SlidingWindowLogEntry[] | undefined =
+      this.getConfig().algorithm === 'sliding-window'
+        ? this.buildSlidingWindowLog(now)
+        : undefined
+    const resetMs = Math.max(this.limiter.resetMs(now), 0)
+    const retryAfterMs = Math.max(this.limiter.retryAfterMs(now), 0)
+    const clockEpochMs =
+      this.simulationStartEpochMs + (now - this.simulationStartVirtualNow)
 
     this.lastSnapshotAt = now
     this.onSnapshot({
@@ -1088,14 +1097,79 @@ export class CanvasVisualizationEngine implements VisualizationController {
       blocked,
       remaining: this.limiter.remaining(now),
       limit: this.getConfig().limit,
-      resetMs: this.limiter.resetMs(now),
-      retryAfterMs: this.limiter.retryAfterMs(now),
+      resetMs,
+      retryAfterMs,
+      clockEpochSeconds: Math.floor(clockEpochMs / 1_000),
+      resetEpochSeconds: Math.ceil((clockEpochMs + resetMs) / 1_000),
       lastAllowed: this.lastResult?.allowed ?? null,
       playing: this.playing,
       started: this.started,
       stopped: this.stopped,
       floatingWindow,
+      slidingWindowLog,
+      redisState: this.buildRedisState(now, resetMs, floatingWindow),
     })
+  }
+
+  /** Mirrors, per algorithm, the single Redis write/read a real limiter would do for this key. */
+  private buildRedisState(
+    now: number,
+    resetMs: number,
+    floatingWindow: FloatingWindowSnapshot | undefined,
+  ): string {
+    const ttlSec = Math.ceil(resetMs / 1_000)
+
+    switch (this.getConfig().algorithm) {
+      case 'fixed-window':
+      case 'user-fixed-window': {
+        const count = this.getConfig().limit - this.limiter.remaining(now)
+        return `INCR key → ${count} · TTL ${ttlSec}s`
+      }
+      case 'sliding-window': {
+        const count = this.limiter instanceof SlidingWindowLimiter ? this.limiter.count(now) : 0
+        return `ZADD key now · ZCARD → ${count}`
+      }
+      case 'floating-window': {
+        const snap = floatingWindow ?? null
+        return snap ? `curr=${snap.currentWindowCount} prev=${snap.previousWindowCount}` : '—'
+      }
+      case 'token-bucket': {
+        if (!(this.limiter instanceof TokenBucketLimiter)) {
+          return '—'
+        }
+        const snap = this.limiter.snapshot(now)
+        return `HSET rl:client tokens ${snap.tokens.toFixed(1)}`
+      }
+      case 'leaky-bucket': {
+        if (!(this.limiter instanceof LeakyBucketLimiter)) {
+          return '—'
+        }
+        const snap = this.limiter.snapshot(now)
+        return `HSET rl:client queue ${snap.queueDepth}`
+      }
+    }
+  }
+
+  private buildSlidingWindowLog(now: number): SlidingWindowLogEntry[] {
+    return this.events
+      .filter((event) => {
+        if (event.allowed) {
+          return !this.evictedEventIds.has(event.id) || this.evictionPopStarts.has(event.id)
+        }
+
+        return now - event.timestamp < REJECT_BUZZ_DURATION_MS
+      })
+      .map((event) => ({
+        id: event.id,
+        timestamp:
+          this.simulationStartEpochMs + (event.timestamp - this.simulationStartVirtualNow),
+        state: !event.allowed
+          ? ('rejected' as const)
+          : this.evictionPopStarts.has(event.id)
+            ? ('evicting' as const)
+            : ('stored' as const),
+      }))
+      .sort((left, right) => right.timestamp - left.timestamp)
   }
 
   private handleResize(): void {
